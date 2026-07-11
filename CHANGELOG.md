@@ -10,6 +10,7 @@
 - Added token-safe normalization for Redshift `APPROXIMATE PERCENTILE_DISC` so the SQLGlot 26.x parser gap does not become a fail-open bypass.
 - Expanded regression coverage to 194 pytest cases and 151 SQL policy scenarios.
 - Added package build verification to GitHub Actions.
+- The packaged default/example policy now permits configured aggregate reductions in addition to counts; explicit existing TSV configurations using `count`, `count_distinct`, or `approx_count` remain backward compatible.
 
 ## 0.1.0
 
