@@ -2,15 +2,20 @@
 
 ## Reporting a vulnerability
 
-Please open a private GitHub security advisory for vulnerabilities that could cause the guard to allow a sensitive final projection unexpectedly. Do not include real credentials, personal data, production SQL, or proprietary schemas in a public issue.
+Use a private GitHub security advisory for a vulnerability that could cause the guard to allow a configured sensitive value to reach a final projection or `RETURNING` unexpectedly.
 
-For ordinary false positives, dialect support, and documentation problems, use a normal issue with a minimized synthetic SQL example.
+Do not include credentials, personal data, production query text, or proprietary schema details. Provide the smallest synthetic SQL and TSV policy that reproduce the behavior.
+
+Use a normal issue for false positives, dialect-support requests, documentation problems, or behavior that does not expose configured values.
 
 ## Supported versions
 
-The latest tagged release and the current default branch are the supported versions while the project is in alpha.
+While the project is in alpha, the latest tagged release and the current default branch are supported. Pin both this package and SQLGlot in operational deployments, and rerun the regression suite before upgrading.
 
-## Scope reminder
+## Security boundary
 
-This package is a static, pre-execution guardrail. It is not a database authorization layer and should not be treated as the sole control for confidential data.
-Aggregate reductions allowed by policy can still support inference or differencing attacks; use minimum group-size and database-side controls when that risk matters.
+This package is a static, pre-execution guardrail. It does not guarantee confidentiality and is not a substitute for database authorization, least-privilege roles, masking, row/column security, MCP server-side controls, or post-execution filtering.
+
+Allowed reductions can still support inference through small groups, repeated queries, differencing, or auxiliary knowledge. UDFs, stored procedures, `UNLOAD`, external outputs, side effects, and unmatched tool paths are outside the reliable protection boundary.
+
+Review [Limitations and threat model](docs/limitations.md), [Architecture](docs/architecture.md), and the [production checklist](docs/ja/manual.md#11-本番導入チェックリスト) before deployment.

@@ -3,55 +3,167 @@
 [![test](https://github.com/rio123dx/mcp-sql-result-guard/actions/workflows/test.yml/badge.svg)](https://github.com/rio123dx/mcp-sql-result-guard/actions/workflows/test.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
-A lightweight Codex `PreToolUse` hook that statically checks SQL before an MCP tool runs and blocks queries whose **final result columns may expose configured sensitive values**.
+A lightweight Codex `PreToolUse` guardrail that blocks configured sensitive values from reaching an LLM through the final result of an MCP SQL tool.
 
-The guard is output-oriented. Sensitive columns may be used internally for filters, joins, grouping, ordering, CTEs, subqueries, intermediate aggregates, and intermediate stars when those values do not flow into the top-level result set or `RETURNING`.
+Documentation for version `0.2.0`. [日本語](README.ja.md)
 
-- Japanese: [README.ja.md](README.ja.md)
-- Japanese installation and operations manual: [docs/ja/manual.md](docs/ja/manual.md)
+## The problem it solves
 
-## Why this exists
+You may want an LLM to analyze data with SQL without returning raw identifiers to the model. At the same time, blocking every query that mentions an identifier is too restrictive: identifiers are often required for filtering, joining, grouping, ordering, and counting.
 
-A rule such as “reject every query that mentions `user_id`” is often too restrictive for analytics. This project distinguishes internal computation from value exposure.
+`mcp-sql-result-guard` distinguishes **internal SQL use** from **value exposure**. It starts at the top-level result columns or DML `RETURNING`, traces value flow backward, and applies a TSV policy to configured column names.
+
+It is designed for data engineers, analytics engineers, data platform engineers, and developers connecting LLM agents to data warehouses through MCP.
+
+## Representative decisions
+
+Assume `user_id` is configured as sensitive with `aggregate_reduction` allowed.
+
+| SQL pattern | Decision | Reason |
+|---|---|---|
+| `SELECT order_total FROM orders WHERE user_id IS NOT NULL` | Allow | `user_id` controls filtering but is not returned. |
+| `SELECT SUM(user_id) FROM orders` | Allow | `SUM` is an explicitly allowed reduction. |
+| `SELECT MIN(user_id) FROM orders` | Deny | `MIN` selects an input value. |
+| `SELECT MD5(user_id) FROM orders` | Deny | A value derived from `user_id` reaches the result. |
+| `UPDATE orders SET reviewed = true RETURNING user_id` | Deny | `RETURNING` exposes the configured value. |
+
+The same output-oriented rule applies across CTEs:
 
 ```sql
--- Allowed: user_id is only a predicate input.
-SELECT amount
-FROM orders
-WHERE user_id = 'u1';
-```
-
-```sql
--- Blocked: the sensitive value reaches the final result.
-SELECT user_id
-FROM orders;
-```
-
-```sql
--- Allowed: a value-collecting aggregate exists only inside the CTE.
-WITH scoped AS (
+-- Allow: the LISTAGG result is discarded before the final result.
+WITH collected AS (
     SELECT LISTAGG(user_id, ',') WITHIN GROUP (ORDER BY created_at) AS ids
     FROM orders
 )
 SELECT COUNT(*)
-FROM scoped;
+FROM collected;
 ```
 
 ```sql
--- Blocked: the collected values are returned through a CTE alias.
-WITH scoped AS (
+-- Deny: the collected values reach the final result through a CTE alias.
+WITH collected AS (
     SELECT LISTAGG(user_id, ',') WITHIN GROUP (ORDER BY created_at) AS ids
     FROM orders
 )
 SELECT ids
-FROM scoped;
+FROM collected;
 ```
 
-## Policy model
+## Quick start
 
-### Configured reduction aggregates
+The project is currently installed from a cloned source tree; this guide does not assume a PyPI release. Replace the example matcher with the exact MCP SQL tool name shown by Codex in your environment.
 
-The `aggregate_reduction` rule mask allows the following scalar statistical or logical reductions when they reach final output:
+### WSL or Linux
+
+Clone the repository, create a Python 3.10+ virtual environment, install from source, and copy the example policy and hook configuration:
+
+```bash
+git clone https://github.com/rio123dx/mcp-sql-result-guard.git
+cd mcp-sql-result-guard
+
+python3 -m venv .venv
+source .venv/bin/activate
+python -m pip install --upgrade pip
+python -m pip install .
+
+mkdir -p .codex/hooks
+cp examples/rules/sensitive_columns.tsv .codex/hooks/sensitive_columns.tsv
+cp examples/codex/config.toml .codex/config.toml
+```
+
+Edit `.codex/config.toml` and replace this placeholder with the exact MCP SQL execution tool name:
+
+```toml
+matcher = "^mcp__warehouse__execute_sql$"
+```
+
+Smoke-test an allowed query and a denied query through standard input:
+
+```bash
+export MCP_SQL_RESULT_GUARD_RULES="$PWD/.codex/hooks/sensitive_columns.tsv"
+export MCP_SQL_RESULT_GUARD_DIALECT=redshift
+export MCP_SQL_RESULT_GUARD_FAIL_OPEN=true
+
+printf '%s' '{"hook_event_name":"PreToolUse","tool_name":"mcp__warehouse__execute_sql","tool_input":{"sql":"SELECT order_total FROM orders WHERE user_id IS NOT NULL"}}' \
+  | ./.venv/bin/mcp-sql-result-guard
+
+printf '%s' '{"hook_event_name":"PreToolUse","tool_name":"mcp__warehouse__execute_sql","tool_input":{"sql":"SELECT user_id FROM orders"}}' \
+  | ./.venv/bin/mcp-sql-result-guard
+```
+
+The first command should produce no stdout. The second should return JSON containing `permissionDecision: "deny"`.
+
+### Windows PowerShell
+
+```powershell
+git clone https://github.com/rio123dx/mcp-sql-result-guard.git
+Set-Location mcp-sql-result-guard
+
+py -3 -m venv .venv
+& .\.venv\Scripts\python.exe -m pip install --upgrade pip
+& .\.venv\Scripts\python.exe -m pip install .
+
+New-Item -ItemType Directory -Force .codex\hooks | Out-Null
+Copy-Item examples\rules\sensitive_columns.tsv .codex\hooks\sensitive_columns.tsv
+Copy-Item examples\codex\config.toml .codex\config.toml
+Copy-Item examples\codex\run-sql-guard.ps1 .codex\hooks\run-sql-guard.ps1
+```
+
+Edit `.codex\config.toml` and replace the matcher with the exact MCP SQL execution tool name. Then smoke-test both decisions:
+
+```powershell
+$env:MCP_SQL_RESULT_GUARD_RULES = (Resolve-Path .codex\hooks\sensitive_columns.tsv)
+$env:MCP_SQL_RESULT_GUARD_DIALECT = "redshift"
+$env:MCP_SQL_RESULT_GUARD_FAIL_OPEN = "true"
+$env:PYTHONUTF8 = "1"
+$env:PYTHONIOENCODING = "utf-8"
+
+$allow = '{"hook_event_name":"PreToolUse","tool_name":"mcp__warehouse__execute_sql","tool_input":{"sql":"SELECT order_total FROM orders WHERE user_id IS NOT NULL"}}'
+$allow | & .\.venv\Scripts\mcp-sql-result-guard.exe
+
+$deny = '{"hook_event_name":"PreToolUse","tool_name":"mcp__warehouse__execute_sql","tool_input":{"sql":"SELECT user_id FROM orders"}}'
+$deny | & .\.venv\Scripts\mcp-sql-result-guard.exe
+```
+
+The first command should produce no stdout; the second should return a deny decision.
+
+### Enable and review the hook
+
+Project hooks are discovered from `.codex/config.toml`. Review and trust the copied hook definition in Codex before relying on it. The matcher is a regular expression over the tool name, so keep it limited to the SQL execution tool rather than every MCP tool.
+
+Choose the failure policy explicitly:
+
+- `MCP_SQL_RESULT_GUARD_FAIL_OPEN=true` (default): warn and allow when SQL or rules cannot be parsed.
+- `MCP_SQL_RESULT_GUARD_FAIL_OPEN=false`: deny when analysis cannot complete.
+
+See the [Codex hooks documentation](https://developers.openai.com/codex/hooks) for hook discovery, trust review, matcher behavior, and `PreToolUse` output.
+
+## Minimal TSV policy
+
+Rules are UTF-8 tab-separated values. Copy [the example policy](examples/rules/sensitive_columns.tsv) into a path managed with your project and replace the synthetic patterns with the columns you need to protect.
+
+```tsv
+enabled	column_pattern	allow	action	note
+1	user_id	aggregate_reduction	deny	Do not return user identifiers to the model
+1	email_address	aggregate_reduction	deny	Do not return email addresses to the model
+1	__SELECT_STAR__		deny	Block unresolved final SELECT * projections
+```
+
+| Field | Meaning |
+|---|---|
+| `enabled` | `1`, `true`, `yes`, or `on` enables the row. |
+| `column_pattern` | Case-insensitive column name pattern; shell-style `*` wildcards are supported. |
+| `allow` | Comma-separated masks: `aggregate_reduction`, `count`, `count_distinct`, `approx_count`. |
+| `action` | `deny` blocks the tool call; `warn` allows it with model-visible context. |
+| `note` | Explanation included in the hook response. |
+
+Rules are evaluated from top to bottom; the first matching column rule wins. `__SELECT_STAR__` is a special policy for an unresolved final base-table star.
+
+## Decision model
+
+The analyzer parses SQL with SQLGlot, starts from final projections or `RETURNING`, and follows value-producing expressions backward through aliases, CTEs, subqueries, set operations, functions, and aggregates.
+
+`aggregate_reduction` allows only known scalar reductions:
 
 - `COUNT`, `COUNT(DISTINCT ...)`, and approximate distinct count
 - `SUM`, `AVG`
@@ -60,131 +172,80 @@ The `aggregate_reduction` rule mask allows the following scalar statistical or l
 - `CORR`, `COVAR_POP`, `COVAR_SAMP`
 - `BOOL_AND`, `BOOL_OR`
 
-Legacy masks `count`, `count_distinct`, and `approx_count` remain supported. `aggregate_reduction` is an umbrella that also permits those count forms.
-
-### Value-carrying aggregates
-
-These remain blocked when a configured sensitive value reaches final output:
+The following remain value-carrying and are denied when a configured input reaches final output:
 
 - `MIN`, `MAX`, `ANY_VALUE`
 - `LISTAGG`, `GROUP_CONCAT`, `STRING_AGG`
 - `ARRAY_AGG` and JSON/object collection aggregates
 - `MEDIAN`, `PERCENTILE_CONT`, `PERCENTILE_DISC`, `MODE`
-- approximate percentile/top-k functions
+- approximate percentile and top-k functions
 - `MIN_BY`, `MAX_BY`, `ARG_MIN`, `ARG_MAX`
 - unknown aggregate functions and UDF-like calls
 
-This classification is deliberately allowlist-based. A newly encountered aggregate is not assumed safe.
+The classification is allowlist-based: an unknown aggregate is not assumed safe. Legacy masks `count`, `count_distinct`, and `approx_count` remain available when a policy should allow counts but not broader reductions.
 
-### Final-output rule
+## Main supported cases
 
-The classification is applied only when the expression can reach a top-level result column or DML `RETURNING`.
-
-- An unsafe aggregate used only inside a CTE is allowed if its output is discarded.
-- A base-table `SELECT *` used only inside a CTE is allowed if no unknown star reaches final output.
-- A derived-table final `SELECT *` is expanded through known projections and checked column by column.
-- An unresolved final base-table `SELECT *` can be denied with `__SELECT_STAR__`.
-
-Predicates, `EXISTS`, `CASE` conditions, window partition/order clauses, aggregate `FILTER` predicates, and other control-only uses are allowed by the lightweight policy. See [docs/limitations.md](docs/limitations.md) for the security boundary.
-
-## Installation
-
-Requires Python 3.10 or later.
-
-```bash
-python -m pip install .
-```
-
-For development:
-
-```bash
-python -m pip install -e ".[dev]"
-```
-
-## Rules
-
-Rules are tab-separated values so policy owners can add columns without editing Python.
-
-```tsv
-enabled	column_pattern	allow	action	note
-1	user_id	aggregate_reduction	deny	User identifiers must not be returned to the model
-1	email_address	aggregate_reduction	deny	Email addresses must not be returned to the model
-1	phone_*	aggregate_reduction	deny	Phone-number columns must not be returned to the model
-1	__SELECT_STAR__		deny	Block unresolved final SELECT * projections
-```
-
-| Field | Meaning |
+| Group | Behavior |
 |---|---|
-| `enabled` | `1`, `true`, `yes`, or `on` enables the row. |
-| `column_pattern` | Case-insensitive column name pattern. Shell-style `*` wildcards are supported. |
-| `allow` | Comma-separated masks: `aggregate_reduction`, `count`, `count_distinct`, `approx_count`. |
-| `action` | `deny` blocks the MCP call; `warn` adds model-visible context and allows it. |
-| `note` | Human-readable explanation included in the hook result. |
+| `WHERE`, `JOIN`, `GROUP BY`, `ORDER BY`, predicates | Allowed when the configured value only controls computation. |
+| CTEs and subqueries | Intermediate values may be used and discarded; aliases and projections are traced if they reach output. |
+| Safe reductions | Allowed only when the matching TSV rule enables the required mask. |
+| Raw, hashed, cast, concatenated, or substring output | Denied because value-derived information reaches the result. |
+| Value-selecting or value-collecting aggregates | Denied at final output, even with `aggregate_reduction`. |
+| `UNION`, `INTERSECT`, `EXCEPT` | Every output branch is inspected. |
+| Derived `SELECT *` | Known projections are expanded and inspected. |
+| Unresolved final base-table `SELECT *` | Controlled by `__SELECT_STAR__`. |
+| DML `RETURNING` | Inspected like a final result set. |
+| Multiple configured columns | Each matching value path is reported. |
+| Parse or configuration failure | Warn/allow or deny according to `MCP_SQL_RESULT_GUARD_FAIL_OPEN`. |
 
-Rules are evaluated from top to bottom; the first matching column rule wins. `__SELECT_STAR__` is a special rule for unresolved final stars from base tables.
+The full executable matrix is in [tests/data/sql_scenarios.tsv](tests/data/sql_scenarios.tsv): 156 scenarios, including 86 allow and 70 deny decisions.
 
-## Codex setup
+## Limitations and security boundary
 
-Codex command hooks receive one JSON object on standard input. A `PreToolUse` hook can match MCP tool names, inspect MCP arguments under `tool_input`, deny a tool call with `permissionDecision: "deny"`, or add non-blocking context with `additionalContext`.
+This project is a best-effort, pre-execution guardrail. It does not guarantee confidentiality and does not replace:
 
-1. Install this package in an environment visible to Codex.
-2. Copy [examples/rules/sensitive_columns.tsv](examples/rules/sensitive_columns.tsv) to a project-controlled path.
-3. Adapt [examples/codex/config.toml](examples/codex/config.toml) to the MCP server and SQL tool names used in your environment.
-4. Review and trust the project hook in Codex.
+- least-privilege database roles
+- column masking or row/column security
+- MCP server-side authorization and statement policy
+- minimum group-size or privacy-budget enforcement
+- query and result audit logging
+- post-execution result filtering
 
-```toml
-[features]
-hooks = true
+Allowed aggregates can still reveal information through small groups, repeated queries, differencing, or auxiliary knowledge. UDFs, stored procedures, dynamic SQL, `UNLOAD`, external exports, side effects, and equivalent access through other tools are outside this guard's reliable boundary. Redshift is the default and primary regression-tested dialect; add dialect-specific scenarios before depending on another SQLGlot dialect.
 
-[[hooks.PreToolUse]]
-matcher = "^mcp__warehouse__execute_sql$"
+Read [Limitations and threat model](docs/limitations.md) and [Security policy](SECURITY.md) before production use.
 
-[[hooks.PreToolUse.hooks]]
-type = "command"
-command = 'MCP_SQL_RESULT_GUARD_RULES="$(git rev-parse --show-toplevel)/.codex/hooks/sensitive_columns.tsv" MCP_SQL_RESULT_GUARD_DIALECT=redshift mcp-sql-result-guard'
-timeout = 10
-statusMessage = "Checking the final SQL result for sensitive values"
-```
+## Detailed documentation
 
-Official Codex hook documentation: <https://developers.openai.com/codex/hooks>
+- [Japanese installation and operations manual](docs/ja/manual.md)
+- [Architecture](docs/architecture.md)
+- [Limitations and threat model](docs/limitations.md)
+- [Security policy](SECURITY.md)
+- [Regression test report](docs/test-report.md)
+- [Examples](examples/README.md)
+- [Contributing](CONTRIBUTING.md)
 
-## Environment variables
-
-| Variable | Default | Meaning |
-|---|---|---|
-| `MCP_SQL_RESULT_GUARD_RULES` | packaged `default_rules.tsv` | Path to the TSV rule file. |
-| `MCP_SQL_RESULT_GUARD_DIALECT` | `redshift` | SQLGlot read dialect. Redshift is the regression-tested dialect in this repository. |
-| `MCP_SQL_RESULT_GUARD_FAIL_OPEN` | `true` | On parse/config errors, warn and allow. Set `false` to deny. |
-
-## Hook input discovery
-
-The hook recursively looks for non-empty string values under keys named `sql`, `query`, or `statement`. Narrow the Codex matcher to the actual SQL execution tool so unrelated tools are not inspected unnecessarily.
-
-## Test coverage
-
-The current regression suite contains:
-
-- **199 pytest cases**
-- **156 SQL policy scenarios**
-
-The matrix covers direct projections, transforms, safe reduction aggregates, value-collecting aggregates, ordered-set aggregates, CTEs, nested subqueries, aliases, set operations, window functions, stars, DML, `RETURNING`, malformed input, TSV parsing, and Codex hook JSON integration.
+## Development and tests
 
 ```bash
+python -m venv .venv
+source .venv/bin/activate  # Windows: .\.venv\Scripts\Activate.ps1
+python -m pip install --upgrade pip
+python -m pip install -e ".[dev]"
 python -m pip check
 python -m pytest
 python scripts/run_scenarios.py
 python -m build
 ```
 
-## Supported scope
+Current regression totals:
 
-The code accepts a SQLGlot dialect through `MCP_SQL_RESULT_GUARD_DIALECT`, but the committed regression suite is centered on Amazon Redshift syntax. Other SQLGlot-supported dialects may work; add dialect-specific tests before relying on them.
-
-## Security boundary
-
-This is a best-effort, pre-execution guardrail. Statistical reductions can still leak information through small groups, repeated queries, differencing, or auxiliary knowledge. It is not a substitute for database permissions, dynamic masking, row/column security, MCP-side enforcement, minimum group-size rules, audit logging, or post-execution result filtering.
-
-See [SECURITY.md](SECURITY.md), [docs/architecture.md](docs/architecture.md), and [docs/limitations.md](docs/limitations.md).
+- pytest: **199 passed / 199**
+- SQL scenarios: **156 passed / 156**
+- expected allow: **86**
+- expected deny: **70**
 
 ## License
 
