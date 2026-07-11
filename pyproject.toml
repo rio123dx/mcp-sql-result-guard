@@ -1,0 +1,57 @@
+[build-system]
+requires = ["hatchling>=1.25"]
+build-backend = "hatchling.build"
+
+[project]
+name = "mcp-sql-result-guard"
+version = "0.1.0"
+description = "A Codex PreToolUse hook that blocks sensitive SQL values from reaching MCP result sets."
+readme = "README.md"
+requires-python = ">=3.10"
+license = { file = "LICENSE" }
+authors = [{ name = "rio123dx" }]
+keywords = ["codex", "mcp", "sql", "guardrail", "privacy", "sqlglot"]
+classifiers = [
+  "Development Status :: 3 - Alpha",
+  "License :: OSI Approved :: MIT License",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.10",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Programming Language :: Python :: 3.13",
+  "Topic :: Database",
+  "Topic :: Security",
+]
+dependencies = ["sqlglot>=26.33,<27"]
+
+[project.optional-dependencies]
+dev = ["pytest>=8.4,<9", "build>=1.2,<2"]
+
+[project.scripts]
+mcp-sql-result-guard = "mcp_sql_result_guard.guard:main"
+
+[project.urls]
+Homepage = "https://github.com/rio123dx/mcp-sql-result-guard"
+Repository = "https://github.com/rio123dx/mcp-sql-result-guard"
+Issues = "https://github.com/rio123dx/mcp-sql-result-guard/issues"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/mcp_sql_result_guard"]
+
+[tool.hatch.build.targets.sdist]
+include = [
+  "/src",
+  "/tests",
+  "/examples",
+  "/docs",
+  "/README.md",
+  "/README.ja.md",
+  "/LICENSE",
+  "/SECURITY.md",
+  "/CONTRIBUTING.md",
+]
+
+[tool.pytest.ini_options]
+addopts = "-q"
+pythonpath = ["src"]
+testpaths = ["tests"]

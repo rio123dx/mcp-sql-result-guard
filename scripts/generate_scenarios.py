@@ -1,0 +1,152 @@
+#!/usr/bin/env python3
+from __future__ import annotations
+
+import csv
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+OUT = ROOT / "tests" / "data" / "sql_scenarios.tsv"
+
+rows: list[tuple[str, str, str, str, str, str]] = []
+
+def add(category: str, rule_set: str, sql: str, expected: str, columns: str, description: str) -> None:
+    rows.append((category, rule_set, sql, expected, columns, description))
+
+# --- 1 sensitive column: user_id ---
+# Safe aggregate masks
+add("COUNT", "one", "SELECT COUNT(user_id) FROM users", "allow", "", "直接COUNTは値を返さない")
+add("COUNT", "one", "SELECT COUNT((user_id)) FROM users", "allow", "", "括弧付きCOUNT")
+add("COUNT DISTINCT", "one", "SELECT COUNT(DISTINCT user_id) FROM users", "allow", "", "重複除外件数")
+add("APPROX COUNT", "one", "SELECT APPROXIMATE COUNT(DISTINCT user_id) FROM users", "allow", "", "近似件数")
+add("COUNT加工入力", "one", "SELECT COUNT(MD5(user_id)) FROM users", "allow", "", "返るのは加工値の件数だけ")
+add("COUNT CASE", "one", "SELECT COUNT(CASE WHEN user_id = 'u1' THEN 1 END) FROM users", "allow", "", "条件内利用でも返るのは件数")
+add("COUNT FILTER", "one", "SELECT COUNT(*) FILTER (WHERE user_id IS NOT NULL) FROM users", "allow", "", "FILTER条件だけに利用")
+add("COUNT IF", "one", "SELECT COUNT_IF(user_id IS NOT NULL) FROM users", "allow", "", "COUNT_IFは件数")
+add("WINDOW COUNT", "one", "SELECT COUNT(user_id) OVER (PARTITION BY event_date) FROM events", "allow", "", "ウィンドウCOUNT")
+
+# Internal-only uses
+add("WHERE", "one", "SELECT name FROM users WHERE user_id = 'u1'", "allow", "", "WHEREだけで利用")
+add("WHERE IN", "one", "SELECT name FROM users WHERE user_id IN ('u1','u2')", "allow", "", "IN条件")
+add("WHERE BETWEEN", "one", "SELECT name FROM users WHERE user_id BETWEEN 'a' AND 'z'", "allow", "", "BETWEEN条件")
+add("WHERE LIKE", "one", "SELECT name FROM users WHERE user_id LIKE 'u%'", "allow", "", "LIKE条件")
+add("JOIN ON", "one", "SELECT a.amount FROM sales a JOIN users b ON a.user_id = b.user_id", "allow", "", "JOINキーだけ")
+add("JOIN USING", "one", "SELECT amount FROM sales JOIN users USING (user_id)", "allow", "", "USING句だけ")
+add("GROUP BY", "one", "SELECT COUNT(*) FROM users GROUP BY user_id", "allow", "", "グループ軸だけ")
+add("HAVING", "one", "SELECT status, COUNT(*) FROM users GROUP BY status HAVING MAX(user_id) > 'u0'", "allow", "", "HAVINGだけ")
+add("ORDER BY", "one", "SELECT name FROM users ORDER BY user_id", "allow", "", "並び順だけ")
+add("DISTINCT ON相当", "one", "SELECT DISTINCT name FROM users WHERE user_id IS NOT NULL", "allow", "", "出力は非機微列")
+add("QUALIFY", "one", "SELECT name FROM users QUALIFY ROW_NUMBER() OVER (PARTITION BY user_id ORDER BY created_at) = 1", "allow", "", "QUALIFYとpartitionだけ")
+add("ROW_NUMBER", "one", "SELECT ROW_NUMBER() OVER (PARTITION BY user_id ORDER BY created_at) AS rn FROM users", "allow", "", "IDはウィンドウ制御だけ")
+add("RANK", "one", "SELECT RANK() OVER (ORDER BY user_id) AS rnk FROM users", "allow", "", "IDは順位の順序だけ")
+add("LAG非機微", "one", "SELECT LAG(name) OVER (ORDER BY user_id) FROM users", "allow", "", "返る値はname")
+add("FIRST_VALUE非機微", "one", "SELECT FIRST_VALUE(name) OVER (PARTITION BY user_id ORDER BY created_at) FROM users", "allow", "", "返る値はname")
+add("LISTAGG順序", "one", "SELECT LISTAGG(name, ',') WITHIN GROUP (ORDER BY user_id) FROM users", "allow", "", "IDは集約順序だけ")
+add("FILTER条件", "one", "SELECT SUM(amount) FILTER (WHERE user_id IS NOT NULL) FROM users", "allow", "", "IDはFILTER条件だけ")
+
+# Predicates/control outputs
+add("比較結果", "one", "SELECT user_id = 'u1' AS is_target FROM users", "allow", "", "返るのは真偽値")
+add("NULL判定", "one", "SELECT user_id IS NULL AS missing FROM users", "allow", "", "返るのは真偽値")
+add("IN判定", "one", "SELECT user_id IN ('u1','u2') AS target FROM users", "allow", "", "返るのは真偽値")
+add("CASE条件", "one", "SELECT CASE WHEN user_id = 'u1' THEN 1 ELSE 0 END AS flag FROM users", "allow", "", "IDはCASE条件だけ")
+add("IF条件", "one", "SELECT IF(user_id = 'u1', 1, 0) AS flag FROM users", "allow", "", "IDはIF条件だけ")
+add("DECODE条件", "one", "SELECT DECODE(user_id, 'u1', 1, 0) AS flag FROM users", "allow", "", "DECODEはCASEへ正規化され条件だけ")
+add("EXISTS", "one", "SELECT EXISTS (SELECT 1 FROM users u WHERE u.user_id = 'u1')", "allow", "", "返るのは存在真偽")
+add("相関EXISTS", "one", "SELECT o.order_id FROM orders o WHERE EXISTS (SELECT 1 FROM users u WHERE u.user_id = o.user_id)", "allow", "", "相関条件だけ")
+
+# CTE/subquery internal uses
+add("CTE内部", "one", "WITH x AS (SELECT user_id, amount FROM users) SELECT SUM(amount) FROM x", "allow", "", "CTEで取得しても最終出力しない")
+add("CTE条件", "one", "WITH x AS (SELECT amount FROM users WHERE user_id = 'u1') SELECT * FROM x", "allow", "", "CTE最終列は安全")
+add("CTE多段", "one", "WITH a AS (SELECT user_id, amount FROM users), b AS (SELECT amount FROM a WHERE user_id IS NOT NULL) SELECT SUM(amount) FROM b", "allow", "", "多段CTEでIDを捨てる")
+add("CTE別名定数", "one", "WITH x AS (SELECT 1 AS user_id) SELECT user_id FROM x", "allow", "", "機微名の別名でも元値が定数なら許可")
+add("CTE別名COUNT", "one", "WITH x AS (SELECT COUNT(user_id) AS user_id FROM users) SELECT user_id FROM x", "allow", "", "機微名でも中身は件数")
+add("副問合せ内部", "one", "SELECT SUM(amount) FROM (SELECT user_id, amount FROM users) x", "allow", "", "副問合せでIDを捨てる")
+add("副問合せCOUNT", "one", "SELECT COUNT(*) FROM (SELECT user_id FROM users) x", "allow", "", "内側IDでも外側は件数")
+add("スカラー副問合せCOUNT", "one", "SELECT (SELECT COUNT(user_id) FROM users) AS n", "allow", "", "スカラー副問合せの件数")
+add("派生STAR安全", "one", "WITH x AS (SELECT amount, name FROM users WHERE user_id = 'u1') SELECT * FROM x", "allow", "", "派生表の安全列だけをSTAR展開")
+add("派生STAR修飾安全", "one", "WITH x AS (SELECT amount, name FROM users WHERE user_id = 'u1') SELECT x.* FROM x", "allow", "", "修飾STARも安全列だけ")
+add("UNION内部条件", "one", "SELECT name FROM users WHERE user_id='u1' UNION ALL SELECT name FROM old_users WHERE user_id='u2'", "allow", "", "両枝とも出力はname")
+add("INTERSECT内部条件", "one", "SELECT name FROM users WHERE user_id='u1' INTERSECT SELECT name FROM old_users WHERE user_id='u2'", "allow", "", "出力はname")
+add("EXCEPT内部条件", "one", "SELECT name FROM users WHERE user_id='u1' EXCEPT SELECT name FROM old_users WHERE user_id='u2'", "allow", "", "出力はname")
+
+# Non-result statements
+add("UPDATE", "one", "UPDATE users SET flag = 1 WHERE user_id = 'u1'", "allow", "", "RETURNINGなし")
+add("DELETE", "one", "DELETE FROM users WHERE user_id = 'u1'", "allow", "", "RETURNINGなし")
+add("INSERT SELECT", "one", "INSERT INTO archive(user_id) SELECT user_id FROM users", "allow", "", "MCP結果セットには値を返さない")
+add("CTAS", "one", "CREATE TABLE archive AS SELECT user_id FROM users", "allow", "", "作成先へ保存するがLLMへ返さない")
+add("EXPLAIN", "one", "EXPLAIN SELECT user_id FROM users", "allow", "", "返るのは実行計画")
+add("SELECT INTO", "one", "SELECT user_id INTO temp_users FROM users", "allow", "", "結果を表へ格納")
+add("複数文内部のみ", "one", "UPDATE users SET flag=1 WHERE user_id='u1'; DELETE FROM old_users WHERE user_id='u2'", "allow", "", "どちらも結果セットなし")
+
+# Direct/derived exposure: deny
+add("直接出力", "one", "SELECT user_id FROM users", "deny", "user_id", "生値")
+add("別名", "one", "SELECT user_id AS uid FROM users", "deny", "user_id", "別名でも生値")
+add("修飾列", "one", "SELECT u.user_id FROM users u", "deny", "user_id", "テーブル修飾")
+add("引用列", "one", 'SELECT "user_id" FROM users', "deny", "user_id", "引用識別子")
+add("大文字列", "one", "SELECT USER_ID FROM users", "deny", "user_id", "大小文字を無視")
+add("CAST", "one", "SELECT CAST(user_id AS VARCHAR) FROM users", "deny", "user_id", "型変換しても値由来")
+add("HASH", "one", "SELECT MD5(user_id) FROM users", "deny", "user_id", "ハッシュも加工値")
+add("SUBSTRING", "one", "SELECT SUBSTRING(user_id, 1, 3) FROM users", "deny", "user_id", "部分値")
+add("CONCAT", "one", "SELECT user_id || '-x' FROM users", "deny", "user_id", "連結値")
+add("COALESCE", "one", "SELECT COALESCE(user_id, 'unknown') FROM users", "deny", "user_id", "代替値付きでも生値を含みうる")
+add("NULLIF", "one", "SELECT NULLIF(user_id, 'u1') FROM users", "deny", "user_id", "値を返しうる")
+add("算術", "one", "SELECT user_id + 1 FROM users", "deny", "user_id", "数値IDの加工")
+add("MIN", "one", "SELECT MIN(user_id) FROM users", "deny", "user_id", "ID値を返す集約")
+add("MAX", "one", "SELECT MAX(user_id) FROM users", "deny", "user_id", "ID値を返す集約")
+add("LISTAGG", "one", "SELECT LISTAGG(user_id, ',') WITHIN GROUP (ORDER BY created_at) FROM users", "deny", "user_id", "ID一覧を返す")
+add("ARRAY_AGG", "one", "SELECT ARRAY_AGG(user_id) FROM users", "deny", "user_id", "ID配列を返す")
+add("ANY_VALUE", "one", "SELECT ANY_VALUE(user_id) FROM users", "deny", "user_id", "代表値を返す")
+add("CASE結果", "one", "SELECT CASE WHEN status=1 THEN user_id ELSE NULL END FROM users", "deny", "user_id", "CASEの結果枝にID")
+add("IF結果", "one", "SELECT IF(status=1, user_id, NULL) FROM users", "deny", "user_id", "IFの結果枝にID")
+add("FIRST_VALUE", "one", "SELECT FIRST_VALUE(user_id) OVER (ORDER BY created_at) FROM users", "deny", "user_id", "ウィンドウ関数がIDを返す")
+add("LAST_VALUE", "one", "SELECT LAST_VALUE(user_id) OVER (ORDER BY created_at ROWS BETWEEN UNBOUNDED PRECEDING AND UNBOUNDED FOLLOWING) FROM users", "deny", "user_id", "ウィンドウ関数がIDを返す")
+add("LAG", "one", "SELECT LAG(user_id) OVER (ORDER BY created_at) FROM users", "deny", "user_id", "前行IDを返す")
+add("LEAD", "one", "SELECT LEAD(user_id) OVER (ORDER BY created_at) FROM users", "deny", "user_id", "次行IDを返す")
+add("スカラー副問合せ", "one", "SELECT (SELECT user_id FROM users LIMIT 1) AS uid", "deny", "user_id", "スカラー副問合せがIDを返す")
+add("CTE伝播", "one", "WITH x AS (SELECT user_id FROM users) SELECT user_id FROM x", "deny", "user_id", "CTE越し")
+add("CTE別名伝播", "one", "WITH x AS (SELECT user_id AS internal_key FROM users) SELECT internal_key FROM x", "deny", "user_id", "別名を追跡")
+add("CTE多段別名", "one", "WITH a AS (SELECT user_id AS x FROM users), b AS (SELECT x AS y FROM a) SELECT y FROM b", "deny", "user_id", "多段別名")
+add("CTE列名リスト", "one", "WITH x(uid) AS (SELECT user_id FROM users) SELECT uid FROM x", "deny", "user_id", "CTE列名リスト")
+add("副問合せ別名", "one", "SELECT x.uid FROM (SELECT user_id AS uid FROM users) x", "deny", "user_id", "派生表別名")
+add("副問合せ列名リスト", "one", "SELECT x.uid FROM (SELECT user_id FROM users) AS x(uid)", "deny", "user_id", "派生表列名リスト")
+add("UNION片枝", "one", "SELECT name FROM users UNION ALL SELECT user_id FROM users", "deny", "user_id", "片枝がID")
+add("UNION両枝", "one", "SELECT user_id FROM users UNION ALL SELECT user_id FROM old_users", "deny", "user_id", "両枝がID")
+add("派生STAR", "one", "WITH x AS (SELECT user_id, amount FROM users) SELECT * FROM x", "deny", "user_id", "派生表STARがIDを展開")
+add("派生修飾STAR", "one", "WITH x AS (SELECT user_id, amount FROM users) SELECT x.* FROM x", "deny", "user_id", "修飾STAR")
+add("基表STAR", "one", "SELECT * FROM users", "deny", "__select_star__", "スキーマ不明の基表STAR")
+add("基表修飾STAR", "one", "SELECT u.* FROM users u", "deny", "__select_star__", "スキーマ不明の修飾STAR")
+add("CTE内部基表STAR伝播", "one", "WITH x AS (SELECT * FROM users) SELECT user_id FROM x", "deny", "user_id", "未展開STARから機微名を参照")
+add("CTE内部基表STAR最終STAR", "one", "WITH x AS (SELECT * FROM users) SELECT * FROM x", "deny", "__select_star__", "未展開STARが最終出力へ流れる")
+add("RETURNING", "one", "UPDATE users SET flag=1 WHERE user_id='u1' RETURNING user_id", "deny", "user_id", "RETURNINGでIDを返す")
+add("DELETE RETURNING", "one", "DELETE FROM users WHERE user_id='u1' RETURNING MD5(user_id)", "deny", "user_id", "RETURNING加工値")
+add("複数文混在", "one", "UPDATE users SET flag=1 WHERE user_id='u1'; SELECT user_id FROM users", "deny", "user_id", "1文でも結果露出なら停止")
+
+# --- 2 sensitive columns: user_id and email ---
+add("2列COUNT", "two", "SELECT COUNT(user_id), COUNT(email) FROM users", "allow", "", "両方とも件数")
+add("2列COUNT DISTINCT", "two", "SELECT COUNT(DISTINCT user_id), COUNT(DISTINCT email) FROM users", "allow", "", "両方とも重複除外件数")
+add("2列内部WHERE", "two", "SELECT name FROM users WHERE user_id='u1' AND email LIKE '%@example.com'", "allow", "", "両方とも条件だけ")
+add("2列JOIN", "two", "SELECT a.amount FROM a JOIN b ON a.user_id=b.user_id AND a.email=b.email", "allow", "", "両方ともJOIN条件")
+add("2列GROUP", "two", "SELECT COUNT(*) FROM users GROUP BY user_id, email", "allow", "", "両方ともグループ軸")
+add("2列CASE条件", "two", "SELECT CASE WHEN user_id='u1' AND email='a@example.com' THEN 1 ELSE 0 END FROM users", "allow", "", "条件だけ")
+add("2列CTE捨てる", "two", "WITH x AS (SELECT user_id, email, amount FROM users) SELECT SUM(amount) FROM x", "allow", "", "CTE内で取得後に捨てる")
+add("2列副問合せCOUNT", "two", "SELECT COUNT(*) FROM (SELECT user_id, email FROM users) x", "allow", "", "外側は件数")
+add("2列派生STAR安全", "two", "WITH x AS (SELECT name, amount FROM users WHERE user_id='u1' AND email IS NOT NULL) SELECT * FROM x", "allow", "", "最終列は安全")
+add("2列片方直接", "two", "SELECT user_id, name FROM users WHERE email IS NOT NULL", "deny", "user_id", "user_idだけ出力")
+add("2列片方email", "two", "SELECT email, name FROM users WHERE user_id='u1'", "deny", "email", "emailだけ出力")
+add("2列両方直接", "two", "SELECT user_id, email FROM users", "deny", "user_id,email", "両方を出力")
+add("2列加工", "two", "SELECT MD5(user_id), LOWER(email) FROM users", "deny", "user_id,email", "両方加工して出力")
+add("2列CASE枝", "two", "SELECT CASE WHEN status=1 THEN user_id ELSE email END FROM users", "deny", "user_id,email", "別々の結果枝")
+add("2列CTE別名", "two", "WITH x AS (SELECT user_id AS k, email AS m FROM users) SELECT k, m FROM x", "deny", "user_id,email", "CTE別名で両方伝播")
+add("2列多段", "two", "WITH a AS (SELECT user_id AS x, email AS y FROM users), b AS (SELECT x AS p, y AS q FROM a) SELECT p, q FROM b", "deny", "user_id,email", "多段CTE")
+add("2列UNION", "two", "SELECT user_id FROM users UNION ALL SELECT email FROM users", "deny", "user_id,email", "枝ごとに別機微列")
+add("2列STAR派生", "two", "WITH x AS (SELECT user_id, email, amount FROM users) SELECT * FROM x", "deny", "user_id,email", "STARで両方出力")
+add("2列RETURNING", "two", "UPDATE users SET flag=1 RETURNING user_id, email", "deny", "user_id,email", "RETURNINGで両方")
+add("2列混合COUNT", "two", "SELECT COUNT(user_id), email FROM users GROUP BY email", "deny", "email", "user_idは件数だがemailは生値")
+add("2列混合加工", "two", "SELECT COUNT(email), SUBSTRING(user_id,1,2) FROM users", "deny", "user_id", "emailは件数、user_idは部分値")
+add("2列内部片方出力", "two", "WITH x AS (SELECT user_id, email FROM users) SELECT COUNT(user_id), email FROM x GROUP BY email", "deny", "email", "CTE越し混合")
+
+with OUT.open("w", encoding="utf-8-sig", newline="") as f:
+    writer = csv.writer(f, delimiter="\t")
+    writer.writerow(["scenario_id", "category", "rule_set", "sql", "expected_result", "expected_columns", "description"])
+    for i, row in enumerate(rows, start=1):
+        writer.writerow([f"S{i:03d}", *row])
+print(f"wrote {len(rows)} scenarios to {OUT}")

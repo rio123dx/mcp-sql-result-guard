@@ -1,0 +1,4 @@
+enabled	column_pattern	allow	action	note
+1	user_id	count,count_distinct,approx_count	deny	user_idの値そのもの・加工値をLLMへ返さない
+1	email	count,count_distinct,approx_count	deny	emailの値そのもの・加工値をLLMへ返さない
+1	__SELECT_STAR__		deny	基表のSELECT *は機微列を含むか判定できないため停止
