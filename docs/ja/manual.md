@@ -1,118 +1,205 @@
 # 導入・運用マニュアル
 
-## 1. このhookの目的
+対象バージョン: `0.2.0`
 
-`mcp-sql-result-guard`は、CodexがMCPのSQL実行ツールを呼ぶ直前にSQLを静的解析し、設定した機微カラムの値が最終結果へ流れる可能性があるときに呼出しを止めます。
+## 1. このツールが解決する問題
 
-禁止したいのは「SQL内での利用」ではなく「LLMへ返る値」です。
+LLMにSQL分析を任せたいが、識別子などの生値をモデルへ返したくない。一方で、識別子を検索、結合、グループ化、並べ替え、件数集計に利用することまでは妨げたくない――`mcp-sql-result-guard`は、この両立を支える軽量なガードレールです。
 
-| SQLでの利用 | 標準判定 |
-|---|---|
-| `WHERE user_id = ...` | 許可 |
-| `JOIN ... ON a.user_id = b.user_id` | 許可 |
-| CTE・副問合せ内部で保持し、最終出力しない | 許可 |
-| `SUM(user_id)`などの安全な縮約集約 | `aggregate_reduction`で許可されていれば許可 |
-| `SELECT user_id` | 拒否 |
-| `SELECT MD5(user_id)` | 拒否 |
-| CTEで別名へ変えて最終出力 | 拒否 |
-| CTE内部だけの危険な集約・`SELECT *` | 最終出力しなければ許可 |
-| 最終結果の未解決`SELECT *` | `__SELECT_STAR__`ルールに従う |
+CodexがMCP SQLツールを呼ぶ直前に`PreToolUse` hookとして動作し、SQLGlotによる静的解析を行います。判定は、SQLに機微列名が現れるかどうかではなく、設定した列の値または値由来の情報が、トップレベルの結果列やDML `RETURNING`へ届く可能性があるかどうかに基づきます。
 
-## 2. 導入前に決めること
+主な利用者は次のような技術者です。
 
-### 2.1 対象MCPツール
+- データエンジニア
+- アナリティクスエンジニア
+- データプラットフォームエンジニア
+- LLM／MCPとデータウェアハウスを接続する開発者
+- SQL実行エージェントへ軽量な出力ガードレールを追加したい利用者
 
-Codexのhook matcherはMCPツール名に対する正規表現です。広く`mcp__server__.*`へ掛けるより、SQLを実行するツールだけへ限定するほうが誤動作が少なくなります。
+## 2. 保護対象と保護対象外
 
-例:
+### 2.1 保護対象
 
-```toml
-matcher = "^mcp__warehouse__execute_sql$"
-```
+設定した機微列について、次の経路を通って最終結果へ届く値を検査します。
 
-実際の名前はCodexのツール表示やhook入力ログで確認してください。
+- 直接の結果列
+- cast、ハッシュ、部分文字列、連結、算術式などの加工値
+- CTE・副問合せ・別名を通る値
+- `UNION`、`INTERSECT`、`EXCEPT`の各出力分岐
+- 値を選択・収集する集約結果
+- ウィンドウ関数やスカラー副問合せの出力
+- DML `RETURNING`
+- 派生表の`SELECT *`から展開できる既知の列
+- 未解決の最終基表`SELECT *`（`__SELECT_STAR__`ルール）
 
-### 2.2 機微カラム
+### 2.2 SQL内部で許可する利用
 
-初期導入では、確実に値を返したくない列だけをTSVへ登録します。例:
+機微列が最終結果へ値として届かない場合、次の用途は原則として許可します。
 
-- ユーザーID
-- 会員ID
-- メールアドレス
-- 電話番号
-- 端末識別子
-- 注文者を一意に特定できる外部キー
+- `WHERE`
+- `JOIN ON`／`JOIN USING`
+- `GROUP BY`
+- 通常の`ORDER BY`
+- `HAVING`、`QUALIFY`、`EXISTS`、述語
+- `CASE`／`IF`の条件
+- CTE・副問合せの中間処理
+- ウィンドウの`PARTITION BY`、`ORDER BY`、frame
+- 集約の`FILTER`条件
+- TSVで許可した既知の縮約集約
 
-### 2.3 解析失敗時の扱い
+### 2.3 保護対象外
 
-- `MCP_SQL_RESULT_GUARD_FAIL_OPEN=true`: 警告して実行を通す
-- `MCP_SQL_RESULT_GUARD_FAIL_OPEN=false`: 解析できなければ拒否する
+このツールは、MCP SQLツールの通常の結果セットへ値が流れる経路を対象にした、best-effortの実行前ガードレールです。次は保護範囲外です。
 
-軽く始めるなら`true`、強制力が必要ならテストを積んだうえで`false`が自然です。
+- DB権限、ロール、行／列レベルセキュリティの代替
+- DBやMCP側のマスキング、認可、監査の代替
+- UDF、ストアドプロシージャ、動的SQL、macroの内部動作
+- `UNLOAD`、外部ファイル出力、任意の副作用
+- 別のMCPツール、shell、DBクライアントを通る同等アクセス
+- prompt、エラー、ログ、MCP metadataに既に含まれる値
+- 小集団、反復照会、差分、外部知識からの推測
 
-## 3. インストール
+## 3. 事前要件
 
-### 3.1 仮想環境
+- Python 3.10以上
+- Git
+- Codexのproject-local設定を利用できる環境
+- SQLを引数として受け取るMCPツール
+- 保護したい列名パターンを決められること
+- 利用DBのSQL方言と代表クエリをテストできること
 
-WSL/Linux:
+既定・主要テスト方言はAmazon Redshiftです。SQLGlotが対応する別方言も指定できますが、導入前に方言固有のシナリオを追加してください。
+
+## 4. Quick start
+
+現時点ではcloneしたソースからインストールします。PyPI配布済みであることを前提にしません。
+
+### 4.1 WSL／Linux
+
+#### 1. cloneとインストール
 
 ```bash
+git clone https://github.com/rio123dx/mcp-sql-result-guard.git
+cd mcp-sql-result-guard
+
 python3 -m venv .venv
 source .venv/bin/activate
 python -m pip install --upgrade pip
 python -m pip install .
 ```
 
-Windows PowerShell:
-
-```powershell
-py -3 -m venv .venv
-.\.venv\Scripts\Activate.ps1
-python -m pip install --upgrade pip
-python -m pip install .
-```
-
-開発・テストも行う場合:
+#### 2. TSVとCodex設定をコピー
 
 ```bash
-python -m pip install -e ".[dev]"
+mkdir -p .codex/hooks
+cp examples/rules/sensitive_columns.tsv .codex/hooks/sensitive_columns.tsv
+cp examples/codex/config.toml .codex/config.toml
 ```
 
-## 4. TSVルール
+#### 3. matcherを変更
 
-### 4.1 書式
+`.codex/config.toml`を開き、仮のツール名を、Codexに表示される実際のMCP SQL実行ツール名へ置き換えます。
 
-タブ区切りです。UTF-8とUTF-8 BOMの両方を読めます。
+```toml
+matcher = "^mcp__warehouse__execute_sql$"
+```
+
+matcherはツール名に対する正規表現です。SQLを実行しないMCPツールまで含めないでください。
+
+#### 4. 標準入力からsmoke test
+
+```bash
+export MCP_SQL_RESULT_GUARD_RULES="$PWD/.codex/hooks/sensitive_columns.tsv"
+export MCP_SQL_RESULT_GUARD_DIALECT=redshift
+export MCP_SQL_RESULT_GUARD_FAIL_OPEN=true
+
+printf '%s' '{"hook_event_name":"PreToolUse","tool_name":"mcp__warehouse__execute_sql","tool_input":{"sql":"SELECT order_total FROM orders WHERE user_id IS NOT NULL"}}' \
+  | ./.venv/bin/mcp-sql-result-guard
+
+printf '%s' '{"hook_event_name":"PreToolUse","tool_name":"mcp__warehouse__execute_sql","tool_input":{"sql":"SELECT user_id FROM orders"}}' \
+  | ./.venv/bin/mcp-sql-result-guard
+```
+
+最初のコマンドは標準出力が空になり、2つ目は`permissionDecision: "deny"`を含むJSONを返します。
+
+### 4.2 Windows PowerShell
+
+#### 1. cloneとインストール
+
+```powershell
+git clone https://github.com/rio123dx/mcp-sql-result-guard.git
+Set-Location mcp-sql-result-guard
+
+py -3 -m venv .venv
+& .\.venv\Scripts\python.exe -m pip install --upgrade pip
+& .\.venv\Scripts\python.exe -m pip install .
+```
+
+#### 2. TSV、Codex設定、wrapperをコピー
+
+```powershell
+New-Item -ItemType Directory -Force .codex\hooks | Out-Null
+Copy-Item examples\rules\sensitive_columns.tsv .codex\hooks\sensitive_columns.tsv
+Copy-Item examples\codex\config.toml .codex\config.toml
+Copy-Item examples\codex\run-sql-guard.ps1 .codex\hooks\run-sql-guard.ps1
+```
+
+`.codex\config.toml`のmatcherを、実際のMCP SQL実行ツール名へ変更します。
+
+#### 3. 標準入力からsmoke test
+
+```powershell
+$env:MCP_SQL_RESULT_GUARD_RULES = (Resolve-Path .codex\hooks\sensitive_columns.tsv)
+$env:MCP_SQL_RESULT_GUARD_DIALECT = "redshift"
+$env:MCP_SQL_RESULT_GUARD_FAIL_OPEN = "true"
+$env:PYTHONUTF8 = "1"
+$env:PYTHONIOENCODING = "utf-8"
+
+$allow = '{"hook_event_name":"PreToolUse","tool_name":"mcp__warehouse__execute_sql","tool_input":{"sql":"SELECT order_total FROM orders WHERE user_id IS NOT NULL"}}'
+$allow | & .\.venv\Scripts\mcp-sql-result-guard.exe
+
+$deny = '{"hook_event_name":"PreToolUse","tool_name":"mcp__warehouse__execute_sql","tool_input":{"sql":"SELECT user_id FROM orders"}}'
+$deny | & .\.venv\Scripts\mcp-sql-result-guard.exe
+```
+
+最初のコマンドは標準出力が空になり、2つ目はdeny JSONを返します。
+
+### 4.3 fail-open／fail-closedを選択
+
+- `MCP_SQL_RESULT_GUARD_FAIL_OPEN=true`（既定）: SQLまたはTSVを解析できない場合、警告してツール呼出しを許可します。
+- `MCP_SQL_RESULT_GUARD_FAIL_OPEN=false`: 解析を完了できない場合にツール呼出しを拒否します。
+
+導入初期は代表SQLを増やしながらfail-openで観測し、強い制御が必要な場合は、方言テストと運用手順を整備したうえでfail-closedを検討します。
+
+## 5. TSVルールの設計
+
+### 5.1 最小構成
+
+ルールファイルはUTF-8のタブ区切りです。UTF-8 BOMも読み取れます。
 
 ```tsv
 enabled	column_pattern	allow	action	note
-1	user_id	aggregate_reduction	deny	ユーザーIDをLLMへ返さない
-1	email_address	aggregate_reduction	deny	メールアドレスをLLMへ返さない
-1	phone_*	aggregate_reduction	deny	電話番号系
-1	__SELECT_STAR__		deny	未解決の最終SELECT *を停止
+1	user_id	aggregate_reduction	deny	ユーザー識別子をモデルへ返さない
+1	email_address	aggregate_reduction	deny	メールアドレスをモデルへ返さない
+1	phone_*	aggregate_reduction	deny	電話番号系の値をモデルへ返さない
+1	__SELECT_STAR__		deny	未解決の最終SELECT *を拒否する
 ```
 
-### 4.2 各列
+### 5.2 各列
 
 | 列 | 内容 |
 |---|---|
-| `enabled` | `1`、`true`、`yes`、`on`で有効。`0`等で無効 |
-| `column_pattern` | 大文字小文字を区別しない列名。`phone_*`のようなワイルドカード可 |
-| `allow` | `aggregate_reduction`、`count`、`count_distinct`、`approx_count`をカンマ区切り |
-| `action` | `deny`なら停止、`warn`なら警告だけ |
-| `note` | Codexへ返す説明 |
+| `enabled` | `1`、`true`、`yes`、`on`で有効。`0`、`false`、`no`、`off`、空文字で無効 |
+| `column_pattern` | 大文字小文字を区別しない列名パターン。`phone_*`のようなワイルドカード可 |
+| `allow` | `aggregate_reduction`、`count`、`count_distinct`、`approx_count`をカンマ区切りで指定 |
+| `action` | `deny`は停止、`warn`はモデルへ追加文脈を返して許可 |
+| `note` | 判定理由へ加える説明 |
 
-通常のカラムルールは上から最初に一致した行が採用されます。個別名を上、広いワイルドカードを下へ置くと管理しやすくなります。
+通常の列ルールは上から評価され、最初に一致した行が採用されます。個別パターンを上、広いワイルドカードを下へ置くと意図を追いやすくなります。
 
-### 4.3 `aggregate_reduction`
+### 5.3 `aggregate_reduction`
 
-```tsv
-1	user_id	aggregate_reduction	deny	...
-```
-
-`aggregate_reduction`は、機微列を既知の統計値・論理値へ縮約した最終出力を許可します。
-
-許可対象:
+`aggregate_reduction`は、次の既知の縮約を最終結果へ返すことを許可します。
 
 - `COUNT`、`COUNT(DISTINCT ...)`、近似重複除外件数
 - `SUM`、`AVG`
@@ -121,69 +208,39 @@ enabled	column_pattern	allow	action	note
 - `CORR`、`COVAR_POP`、`COVAR_SAMP`
 - `BOOL_AND`、`BOOL_OR`
 
-`aggregate_reduction`はCOUNT系を含む包括指定です。既存設定との互換性のため、`count`、`count_distinct`、`approx_count`も引き続き利用できます。
-
-COUNT系だけを許可し、`SUM`や`AVG`を許可しない場合:
+COUNT系だけを許可し、`SUM`や`AVG`を許可しない場合は、従来のmaskを指定します。
 
 ```tsv
-1	user_id	count,count_distinct,approx_count	deny	...
+1	user_id	count,count_distinct,approx_count	deny	件数だけを許可する
 ```
 
-### 4.4 最終出力時に拒否する集約
+### 5.4 最終出力で拒否する集約
 
-入力値そのもの、入力値の一つ、または入力値の集合を返しうる集約は、`aggregate_reduction`を指定していても許可しません。
+入力値そのもの、入力値の一つ、または入力値の集合を返しうる集約は、`aggregate_reduction`を指定していても最終出力で拒否します。
 
 - `MIN`、`MAX`、`ANY_VALUE`
 - `LISTAGG`、`GROUP_CONCAT`、`STRING_AGG`
-- `ARRAY_AGG`、JSON・オブジェクト集約
+- `ARRAY_AGG`、JSON／オブジェクト集約
 - `MEDIAN`、`PERCENTILE_CONT`、`PERCENTILE_DISC`、`MODE`
-- 近似パーセンタイル、上位値集合
+- 近似パーセンタイル、top-k関数
 - `MIN_BY`、`MAX_BY`、`ARG_MIN`、`ARG_MAX`
-- 未知の集約関数、ユーザー定義関数
+- 未知の集約関数、UDF相当の呼出し
 
-安全性はallowlistで判定します。SQLGlotが集約として解析したという理由だけで一律許可はしません。
+安全性はallowlistで判定します。未知の集約を自動的には許可しません。
 
-### 4.5 CTE・副問合せでの集約
+### 5.5 `__SELECT_STAR__`
 
-判定対象はトップレベルの結果列と`RETURNING`です。中間式を作っただけでは拒否しません。
-
-```sql
--- 許可: LISTAGG結果を作るが、最終結果へ出さない
-WITH x AS (
-    SELECT LISTAGG(user_id, ',') WITHIN GROUP (ORDER BY created_at) AS ids
-    FROM users
-)
-SELECT COUNT(*)
-FROM x;
-```
-
-```sql
--- 拒否: CTEの別名を通して最終結果へ出す
-WITH x AS (
-    SELECT LISTAGG(user_id, ',') WITHIN GROUP (ORDER BY created_at) AS ids
-    FROM users
-)
-SELECT ids
-FROM x;
-```
-
-同じ原則は`MIN`、`MAX`、パーセンタイル、未知の関数にも適用されます。危険な式でも出力が捨てられれば許可し、最終結果へ届けば拒否します。
-
-### 4.6 SELECT STAR
+SQLだけでは基表の列構成を解決できないため、最終結果に残る未解決の基表`SELECT *`は特別ルールで制御します。
 
 ```tsv
-1	__SELECT_STAR__		deny	未解決の最終SELECT *を停止
+1	__SELECT_STAR__		deny	未解決の最終SELECT *を拒否する
 ```
 
-- `WITH x AS (SELECT * FROM base_table) SELECT COUNT(*) FROM x`: STARの列値を最終出力しないので許可
-- `WITH x AS (SELECT name, amount FROM t) SELECT * FROM x`: 派生列を追跡し、機微列がなければ許可
-- `WITH x AS (SELECT user_id, amount FROM t) SELECT * FROM x`: 派生STARから機微列が最終出力されるため拒否
-- `SELECT * FROM base_table`: 列構成不明なので拒否
-- `SELECT COUNT(*) FROM t`: 件数なのでSTAR出力とは扱わない
+`SELECT COUNT(*)`は行数を返す集約であり、STARの列値出力とは扱いません。
 
-## 5. Codex設定
+## 6. Codex hookの設定
 
-`.codex/config.toml`へ追加します。
+サンプルの[examples/codex/config.toml](../../examples/codex/config.toml)は、project-localな`.codex/config.toml`へコピーして使います。
 
 ```toml
 [features]
@@ -194,139 +251,282 @@ matcher = "^mcp__warehouse__execute_sql$"
 
 [[hooks.PreToolUse.hooks]]
 type = "command"
-command = 'MCP_SQL_RESULT_GUARD_RULES="$(git rev-parse --show-toplevel)/.codex/hooks/sensitive_columns.tsv" MCP_SQL_RESULT_GUARD_DIALECT=redshift mcp-sql-result-guard'
+command = 'MCP_SQL_RESULT_GUARD_RULES="$(git rev-parse --show-toplevel)/.codex/hooks/sensitive_columns.tsv" MCP_SQL_RESULT_GUARD_DIALECT=redshift MCP_SQL_RESULT_GUARD_FAIL_OPEN=true "$(git rev-parse --show-toplevel)/.venv/bin/mcp-sql-result-guard"'
+command_windows = "powershell -NoProfile -ExecutionPolicy Bypass -Command \"& (Join-Path (git rev-parse --show-toplevel) '.codex\\hooks\\run-sql-guard.ps1')\""
 timeout = 10
-statusMessage = "Checking the final SQL result for sensitive values"
+statusMessage = "Checking SQL result columns for configured sensitive values"
 ```
 
-プロジェクトローカルhookは、Codexでプロジェクトとhook定義を信頼した後に実行されます。hookやコマンドを変更した場合は再レビューが必要になることがあります。
+### 6.1 matcher
 
-### Windows
-
-Windowsでは環境変数設定と実行をまとめた`.ps1`を用意し、`command_windows`から絶対パスで呼ぶ方式が扱いやすいです。
-
-例 `run-sql-guard.ps1`:
-
-```powershell
-$env:MCP_SQL_RESULT_GUARD_RULES = Join-Path $PSScriptRoot "sensitive_columns.tsv"
-$env:MCP_SQL_RESULT_GUARD_DIALECT = "redshift"
-$env:MCP_SQL_RESULT_GUARD_FAIL_OPEN = "true"
-& "$PSScriptRoot\..\..\.venv\Scripts\mcp-sql-result-guard.exe"
-exit $LASTEXITCODE
-```
-
-設定例:
+`PreToolUse`ではmatcherがツール名へ適用されます。正規表現をSQL実行ツールだけへ限定し、必要な場合は複数のSQLツール名を明示的に列挙します。
 
 ```toml
-command_windows = 'powershell -NoProfile -ExecutionPolicy Bypass -File "C:\work\project\.codex\hooks\run-sql-guard.ps1"'
+matcher = "^(mcp__warehouse__execute_sql|mcp__analytics__run_query)$"
 ```
 
-## 6. 動作確認
+### 6.2 SQL引数の検出
 
-### 6.1 許可ケース
+hookはMCPの`tool_input`を再帰的に調べ、`sql`、`query`、`statement`というキーの非空文字列をSQL候補として扱います。利用中のMCPが別のキーを使う場合は、現状のままでは検査対象になりません。
 
-```bash
-printf '%s' '{
-  "hook_event_name":"PreToolUse",
-  "tool_name":"mcp__warehouse__execute_sql",
-  "tool_input":{"sql":"SELECT name FROM users WHERE user_id = '\''u1'\''"}
-}' | MCP_SQL_RESULT_GUARD_RULES=examples/rules/sensitive_columns.tsv mcp-sql-result-guard
+### 6.3 信頼レビュー
+
+project-local hookは、プロジェクトの`.codex/`設定が信頼され、hook定義自体がレビューされてから実行されます。hookコマンドを変更した場合は再レビューが必要です。
+
+Codex hookの現行仕様は[公式hooksドキュメント](https://developers.openai.com/codex/hooks)で確認してください。
+
+## 7. 判定例
+
+以下はすべて架空のテーブル名・列名です。`user_id`は`aggregate_reduction`付きで機微列に登録されているとします。
+
+### 7.1 WHERE／JOIN／GROUP BYでの内部利用
+
+```sql
+-- 許可: user_idは絞込みだけに利用
+SELECT order_total
+FROM orders
+WHERE user_id IS NOT NULL;
 ```
 
-標準出力が空なら許可です。
-
-### 6.2 拒否ケース
-
-```bash
-printf '%s' '{
-  "hook_event_name":"PreToolUse",
-  "tool_name":"mcp__warehouse__execute_sql",
-  "tool_input":{"sql":"SELECT user_id FROM users"}
-}' | MCP_SQL_RESULT_GUARD_RULES=examples/rules/sensitive_columns.tsv mcp-sql-result-guard
+```sql
+-- 許可: user_idは結合とグループ化に利用し、返すのは件数
+SELECT COUNT(*)
+FROM orders AS o
+JOIN customer_segments AS s USING (user_id)
+GROUP BY s.segment_name;
 ```
 
-`permissionDecision: deny`を含むJSONが返ります。
+### 7.2 安全な縮約と値選択集約
 
-## 7. テスト
+```sql
+-- 許可: aggregate_reduction設定時
+SELECT SUM(user_id)
+FROM orders;
+```
+
+```sql
+-- 拒否: MINは入力値の一つを返しうる
+SELECT MIN(user_id)
+FROM orders;
+```
+
+### 7.3 CTE内部のLISTAGG
+
+```sql
+-- 許可: LISTAGG結果を作るが、最終出力前に捨てる
+WITH collected AS (
+    SELECT LISTAGG(user_id, ',') WITHIN GROUP (ORDER BY created_at) AS ids
+    FROM orders
+)
+SELECT COUNT(*)
+FROM collected;
+```
+
+```sql
+-- 拒否: CTEの別名からLISTAGG結果を最終出力
+WITH collected AS (
+    SELECT LISTAGG(user_id, ',') WITHIN GROUP (ORDER BY created_at) AS ids
+    FROM orders
+)
+SELECT ids
+FROM collected;
+```
+
+### 7.4 中間STARと最終STAR
+
+```sql
+-- 許可: 基表STARを中間で使い、最終結果は件数へ縮約
+WITH scoped AS (
+    SELECT *
+    FROM orders
+    WHERE user_id IS NOT NULL
+)
+SELECT COUNT(*)
+FROM scoped;
+```
+
+```sql
+-- 拒否: 派生STARからuser_idが最終出力へ届く
+WITH scoped AS (
+    SELECT user_id, order_total
+    FROM orders
+)
+SELECT *
+FROM scoped;
+```
+
+`SELECT * FROM orders`のような未解決の最終基表STARは、`__SELECT_STAR__`ルールに従います。
+
+### 7.5 生値・加工値
+
+```sql
+-- 拒否: 生値
+SELECT user_id
+FROM orders;
+```
+
+```sql
+-- 拒否: ハッシュもuser_id由来の値
+SELECT MD5(user_id)
+FROM orders;
+```
+
+cast、部分文字列、連結、算術式なども同じように値経路を追跡します。
+
+### 7.6 CTE・別名・UNIONを通る伝播
+
+```sql
+-- 拒否: 多段別名でも元の機微列まで追跡
+WITH first_step AS (
+    SELECT user_id AS key_a FROM orders
+), second_step AS (
+    SELECT key_a AS key_b FROM first_step
+)
+SELECT key_b
+FROM second_step;
+```
+
+```sql
+-- 拒否: UNIONの一方の分岐から値が届く
+SELECT order_name FROM orders
+UNION ALL
+SELECT user_id FROM archived_orders;
+```
+
+### 7.7 RETURNINGと複数の機微列
+
+```sql
+-- 拒否: RETURNINGも最終結果として検査
+UPDATE orders
+SET reviewed = true
+RETURNING user_id;
+```
+
+複数の機微列をTSVへ登録した場合、最終結果へ届く各列を検査し、判定理由へまとめます。
+
+### 7.8 fail-open／fail-closed
+
+SQL parse error、方言差、TSVの書式不正などで解析を完了できない場合、`MCP_SQL_RESULT_GUARD_FAIL_OPEN`が判定を決めます。
+
+| 設定 | 解析失敗時の挙動 |
+|---|---|
+| `true` | 警告して許可 |
+| `false` | 拒否 |
+
+## 8. 動作確認
+
+### 8.1 hook単体のsmoke test
+
+Quick startの標準入力例を使い、次を確認します。
+
+- WHEREだけで機微列を使うSQLは標準出力なし
+- 機微列を直接返すSQLはdeny JSON
+- `MCP_SQL_RESULT_GUARD_FAIL_OPEN`が意図した値
+- `MCP_SQL_RESULT_GUARD_DIALECT`が利用DB方言と一致
+- TSVがコピー先から読み込まれている
+
+### 8.2 回帰テスト
+
+開発用依存をインストールして実行します。
 
 ```bash
+python -m pip install -e ".[dev]"
 python -m pip check
 python -m pytest
 python scripts/run_scenarios.py
 python -m build
 ```
 
-現在の構成では:
+現在の正しい件数は次のとおりです。
 
-- pytest 194件
-- SQLシナリオ 151件
+- pytest: **199 passed / 199**
+- SQLシナリオ: **156 passed / 156**
+- expected allow: **86**
+- expected deny: **70**
 
-シナリオは`tests/data/sql_scenarios.tsv`にあり、期待値とSQLを一覧できます。
+実行可能なSQLマトリクスは[tests/data/sql_scenarios.tsv](../../tests/data/sql_scenarios.tsv)にあります。
 
-## 8. 運用手順
+## 9. 運用とルール更新
 
-### カラム追加
+### 9.1 列パターンを追加する
 
-1. TSVへ行を追加
-2. ローカルでpytestとシナリオを実行
-3. `warn`で観測したい場合はactionを変更
-4. コードレビュー
-5. 配布・反映
-6. Codexでhook定義を再レビュー
+1. TSVへ列パターンを追加する
+2. 代表的なallow／deny SQLをシナリオへ追加する
+3. pytestとSQLシナリオを実行する
+4. matcherとfail-open／fail-closed設定をレビューする
+5. TSVとhook設定を同じ変更管理手順で反映する
 
-### バージョン更新
+### 9.2 SQL方言またはSQLGlotを更新する
 
-依存ライブラリSQLGlotの更新は解析結果を変える可能性があります。バージョン更新時は151シナリオを必ず再実行し、方言固有SQLも追加してください。
+SQLGlotの更新はASTやscope解決を変える可能性があります。バージョン変更時は156シナリオを再実行し、利用DB固有の構文を追加します。特に、集約、`WITHIN GROUP`、STAR、DML `RETURNING`、CTE、集合演算を確認してください。
 
-### 監査向けに残す情報
+### 9.3 記録しておく情報
 
-- リポジトリのコミットSHA
-- TSVルールのコミットSHA
+- 本パッケージのバージョンまたはコミットSHA
+- TSVポリシーのrevision
 - PythonとSQLGlotのバージョン
-- pytest・シナリオ結果
+- pytest・SQLシナリオ・build結果
 - Codex matcher
-- fail-open / fail-closed設定
+- SQL方言
+- fail-open／fail-closed設定
 
-## 9. よくある問題
+## 10. トラブルシューティング
 
 ### hookが動かない
 
-- `[features] hooks = true`を確認
-- プロジェクトが信頼済みか確認
-- matcherが実際のMCPツール名と一致するか確認
-- コマンドをターミナルから単独実行
-- Codexをサブディレクトリから起動する場合はgit root基準のパスを使う
+- `.codex/config.toml`が対象リポジトリにあるか確認する
+- hookがCodexで信頼済みか確認する
+- matcherが実際のMCPツール名と一致するか確認する
+- hookコマンドをterminalから単独実行する
+- サブディレクトリからCodexを起動してもgit root基準でpathを解決できるか確認する
+- Windowsではwrapperと`.venv\Scripts\mcp-sql-result-guard.exe`の存在を確認する
 
-### SQLが見つからない
+### SQLが検出されない
 
-hookはMCP引数内の`sql`、`query`、`statement`というキーを再帰的に探します。別名キーを使うMCPでは`SQL_ARGUMENT_KEYS`の拡張が必要です。
+MCP引数内の`sql`、`query`、`statement`だけがSQL候補です。別のキー名を使うMCPは、現仕様のままでは検査されません。
 
-### 方言エラー
+### 方言エラーが出る
 
-```text
-MCP_SQL_RESULT_GUARD_DIALECT=redshift
-```
+`MCP_SQL_RESULT_GUARD_DIALECT`を利用DBに合わせます。ただしRedshift以外を利用する場合は、方言固有シナリオを追加してから依存してください。
 
-を実際のDBに合わせます。ただし、リポジトリの回帰テストはRedshift中心です。他方言は固有シナリオを追加してから運用してください。
+### 安全に見える集約が拒否される
 
-### 集約関数が拒否された
+- TSVの`allow`に必要なmaskがあるか確認する
+- 関数が既知の縮約allowlistに含まれるか確認する
+- 未知関数は既定で拒否される
+- `MIN`、`MAX`、列挙集約、パーセンタイルは値を保持しうるため拒否される
 
-- TSVの`allow`に`aggregate_reduction`があるか確認
-- 関数が安全な縮約allowlistに含まれるか確認
-- `MIN`、`MAX`、列挙集約、パーセンタイル、未知関数は最終出力時に拒否される
-- 中間処理だけなら、最終SELECTがその列を参照していないか確認
+### `SELECT *`を許可したい
 
-### SELECT *を許可したい
+`__SELECT_STAR__`行を無効化できますが、基表STARの列構成をSQLだけで確認できなくなります。DB viewで列を限定する方法や、列を明示するSQLを優先してください。
 
-`__SELECT_STAR__`行を無効化できます。ただし基表STARに機微列が含まれるかSQLだけでは判断できなくなります。
+### 解析失敗を許可したくない
 
-## 10. 会社への持込み・レビュー用チェック
+`MCP_SQL_RESULT_GUARD_FAIL_OPEN=false`へ変更し、利用方言の代表SQLとエラー処理を先に検証します。
 
-- [ ] 実在のテーブル名、社内SQL、社内パスが公開物に含まれていない
-- [ ] TSVサンプルが架空の列名になっている
-- [ ] MITライセンスと依存ライセンスを確認した
-- [ ] GitHub Actionsまたは社内CIでテストを再実行した
-- [ ] コミットSHAを固定した
-- [ ] PyPI等ではなく社内ミラーやソースから再ビルドする方針を決めた
-- [ ] DB権限やマスキングの代替ではないと合意した
-- [ ] fail-open設定をリスクに合わせて決めた
+## 11. 本番導入チェックリスト
+
+- [ ] matcherをSQL実行ツールのみに限定した
+- [ ] TSVへ実際に保護したい列パターンを登録した
+- [ ] 利用DB方言の代表SQLをシナリオテストへ追加した
+- [ ] fail-open／fail-closedをリスクに応じて決定した
+- [ ] DBロールを最小権限にした
+- [ ] マスキング、行列権限、監査ログなどの補完策を確認した
+- [ ] 基表の最終`SELECT *`を許可するか決定した
+- [ ] SQLGlotと本パッケージのバージョンを固定した
+- [ ] バージョン更新時にpytestとSQLシナリオを再実行する手順を決めた
+- [ ] 小集団や反復照会による推測リスクを別レイヤーで扱うか決定した
+- [ ] UDF、ストアドプロシージャ、`UNLOAD`、外部出力が本ツールの範囲外であることを確認した
+
+## 12. 制約と関連ドキュメント
+
+本ツールは静的解析に基づく軽量なガードレールであり、情報漏えいを完全に防ぐものではありません。導入判断では、DB・MCP・Codex・監査・privacy controlを含む全体のデータ経路を確認してください。
+
+- [README（日本語）](../../README.ja.md)
+- [Architecture](../architecture.md)
+- [Limitations and threat model](../limitations.md)
+- [Security policy](../../SECURITY.md)
+- [Regression test report](../test-report.md)
+- [Examples](../../examples/README.md)
+- [Contributing](../../CONTRIBUTING.md)
+- [Codex hooks documentation](https://developers.openai.com/codex/hooks)
