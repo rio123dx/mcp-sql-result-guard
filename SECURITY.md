@@ -13,3 +13,4 @@ The latest tagged release and the current default branch are the supported versi
 ## Scope reminder
 
 This package is a static, pre-execution guardrail. It is not a database authorization layer and should not be treated as the sole control for confidential data.
+Aggregate reductions allowed by policy can still support inference or differencing attacks; use minimum group-size and database-side controls when that risk matters.

@@ -82,3 +82,15 @@ def test_parse_bool_true(value):
 @pytest.mark.parametrize("value", ["0", "false", "NO", "off", ""])
 def test_parse_bool_false(value):
     assert parse_bool(value, field_name="x") is False
+
+
+def test_aggregate_reduction_allow_value(tmp_path: Path):
+    path = tmp_path / "rules.tsv"
+    path.write_text(
+        "enabled\tcolumn_pattern\tallow\taction\tnote\n"
+        "1\tuser_id\taggregate_reduction\tdeny\tstatistics\n",
+        encoding="utf-8",
+    )
+    rule = find_rule("user_id", load_rules(path))
+    assert rule is not None
+    assert rule.allowed_usages == frozenset({"aggregate_reduction"})

@@ -8,111 +8,145 @@ S006	COUNT CASE	one	SELECT COUNT(CASE WHEN user_id = 'u1' THEN 1 END) FROM users
 S007	COUNT FILTER	one	SELECT COUNT(*) FILTER (WHERE user_id IS NOT NULL) FROM users	allow		FILTER条件だけに利用
 S008	COUNT IF	one	SELECT COUNT_IF(user_id IS NOT NULL) FROM users	allow		COUNT_IFは件数
 S009	WINDOW COUNT	one	SELECT COUNT(user_id) OVER (PARTITION BY event_date) FROM events	allow		ウィンドウCOUNT
-S010	WHERE	one	SELECT name FROM users WHERE user_id = 'u1'	allow		WHEREだけで利用
-S011	WHERE IN	one	SELECT name FROM users WHERE user_id IN ('u1','u2')	allow		IN条件
-S012	WHERE BETWEEN	one	SELECT name FROM users WHERE user_id BETWEEN 'a' AND 'z'	allow		BETWEEN条件
-S013	WHERE LIKE	one	SELECT name FROM users WHERE user_id LIKE 'u%'	allow		LIKE条件
-S014	JOIN ON	one	SELECT a.amount FROM sales a JOIN users b ON a.user_id = b.user_id	allow		JOINキーだけ
-S015	JOIN USING	one	SELECT amount FROM sales JOIN users USING (user_id)	allow		USING句だけ
-S016	GROUP BY	one	SELECT COUNT(*) FROM users GROUP BY user_id	allow		グループ軸だけ
-S017	HAVING	one	SELECT status, COUNT(*) FROM users GROUP BY status HAVING MAX(user_id) > 'u0'	allow		HAVINGだけ
-S018	ORDER BY	one	SELECT name FROM users ORDER BY user_id	allow		並び順だけ
-S019	DISTINCT ON相当	one	SELECT DISTINCT name FROM users WHERE user_id IS NOT NULL	allow		出力は非機微列
-S020	QUALIFY	one	SELECT name FROM users QUALIFY ROW_NUMBER() OVER (PARTITION BY user_id ORDER BY created_at) = 1	allow		QUALIFYとpartitionだけ
-S021	ROW_NUMBER	one	SELECT ROW_NUMBER() OVER (PARTITION BY user_id ORDER BY created_at) AS rn FROM users	allow		IDはウィンドウ制御だけ
-S022	RANK	one	SELECT RANK() OVER (ORDER BY user_id) AS rnk FROM users	allow		IDは順位の順序だけ
-S023	LAG非機微	one	SELECT LAG(name) OVER (ORDER BY user_id) FROM users	allow		返る値はname
-S024	FIRST_VALUE非機微	one	SELECT FIRST_VALUE(name) OVER (PARTITION BY user_id ORDER BY created_at) FROM users	allow		返る値はname
-S025	LISTAGG順序	one	SELECT LISTAGG(name, ',') WITHIN GROUP (ORDER BY user_id) FROM users	allow		IDは集約順序だけ
-S026	FILTER条件	one	SELECT SUM(amount) FILTER (WHERE user_id IS NOT NULL) FROM users	allow		IDはFILTER条件だけ
-S027	比較結果	one	SELECT user_id = 'u1' AS is_target FROM users	allow		返るのは真偽値
-S028	NULL判定	one	SELECT user_id IS NULL AS missing FROM users	allow		返るのは真偽値
-S029	IN判定	one	SELECT user_id IN ('u1','u2') AS target FROM users	allow		返るのは真偽値
-S030	CASE条件	one	SELECT CASE WHEN user_id = 'u1' THEN 1 ELSE 0 END AS flag FROM users	allow		IDはCASE条件だけ
-S031	IF条件	one	SELECT IF(user_id = 'u1', 1, 0) AS flag FROM users	allow		IDはIF条件だけ
-S032	DECODE条件	one	SELECT DECODE(user_id, 'u1', 1, 0) AS flag FROM users	allow		DECODEはCASEへ正規化され条件だけ
-S033	EXISTS	one	SELECT EXISTS (SELECT 1 FROM users u WHERE u.user_id = 'u1')	allow		返るのは存在真偽
-S034	相関EXISTS	one	SELECT o.order_id FROM orders o WHERE EXISTS (SELECT 1 FROM users u WHERE u.user_id = o.user_id)	allow		相関条件だけ
-S035	CTE内部	one	WITH x AS (SELECT user_id, amount FROM users) SELECT SUM(amount) FROM x	allow		CTEで取得しても最終出力しない
-S036	CTE条件	one	WITH x AS (SELECT amount FROM users WHERE user_id = 'u1') SELECT * FROM x	allow		CTE最終列は安全
-S037	CTE多段	one	WITH a AS (SELECT user_id, amount FROM users), b AS (SELECT amount FROM a WHERE user_id IS NOT NULL) SELECT SUM(amount) FROM b	allow		多段CTEでIDを捨てる
-S038	CTE別名定数	one	WITH x AS (SELECT 1 AS user_id) SELECT user_id FROM x	allow		機微名の別名でも元値が定数なら許可
-S039	CTE別名COUNT	one	WITH x AS (SELECT COUNT(user_id) AS user_id FROM users) SELECT user_id FROM x	allow		機微名でも中身は件数
-S040	副問合せ内部	one	SELECT SUM(amount) FROM (SELECT user_id, amount FROM users) x	allow		副問合せでIDを捨てる
-S041	副問合せCOUNT	one	SELECT COUNT(*) FROM (SELECT user_id FROM users) x	allow		内側IDでも外側は件数
-S042	スカラー副問合せCOUNT	one	SELECT (SELECT COUNT(user_id) FROM users) AS n	allow		スカラー副問合せの件数
-S043	派生STAR安全	one	WITH x AS (SELECT amount, name FROM users WHERE user_id = 'u1') SELECT * FROM x	allow		派生表の安全列だけをSTAR展開
-S044	派生STAR修飾安全	one	WITH x AS (SELECT amount, name FROM users WHERE user_id = 'u1') SELECT x.* FROM x	allow		修飾STARも安全列だけ
-S045	UNION内部条件	one	SELECT name FROM users WHERE user_id='u1' UNION ALL SELECT name FROM old_users WHERE user_id='u2'	allow		両枝とも出力はname
-S046	INTERSECT内部条件	one	SELECT name FROM users WHERE user_id='u1' INTERSECT SELECT name FROM old_users WHERE user_id='u2'	allow		出力はname
-S047	EXCEPT内部条件	one	SELECT name FROM users WHERE user_id='u1' EXCEPT SELECT name FROM old_users WHERE user_id='u2'	allow		出力はname
-S048	UPDATE	one	UPDATE users SET flag = 1 WHERE user_id = 'u1'	allow		RETURNINGなし
-S049	DELETE	one	DELETE FROM users WHERE user_id = 'u1'	allow		RETURNINGなし
-S050	INSERT SELECT	one	INSERT INTO archive(user_id) SELECT user_id FROM users	allow		MCP結果セットには値を返さない
-S051	CTAS	one	CREATE TABLE archive AS SELECT user_id FROM users	allow		作成先へ保存するがLLMへ返さない
-S052	EXPLAIN	one	EXPLAIN SELECT user_id FROM users	allow		返るのは実行計画
-S053	SELECT INTO	one	SELECT user_id INTO temp_users FROM users	allow		結果を表へ格納
-S054	複数文内部のみ	one	UPDATE users SET flag=1 WHERE user_id='u1'; DELETE FROM old_users WHERE user_id='u2'	allow		どちらも結果セットなし
-S055	直接出力	one	SELECT user_id FROM users	deny	user_id	生値
-S056	別名	one	SELECT user_id AS uid FROM users	deny	user_id	別名でも生値
-S057	修飾列	one	SELECT u.user_id FROM users u	deny	user_id	テーブル修飾
-S058	引用列	one	"SELECT ""user_id"" FROM users"	deny	user_id	引用識別子
-S059	大文字列	one	SELECT USER_ID FROM users	deny	user_id	大小文字を無視
-S060	CAST	one	SELECT CAST(user_id AS VARCHAR) FROM users	deny	user_id	型変換しても値由来
-S061	HASH	one	SELECT MD5(user_id) FROM users	deny	user_id	ハッシュも加工値
-S062	SUBSTRING	one	SELECT SUBSTRING(user_id, 1, 3) FROM users	deny	user_id	部分値
-S063	CONCAT	one	SELECT user_id || '-x' FROM users	deny	user_id	連結値
-S064	COALESCE	one	SELECT COALESCE(user_id, 'unknown') FROM users	deny	user_id	代替値付きでも生値を含みうる
-S065	NULLIF	one	SELECT NULLIF(user_id, 'u1') FROM users	deny	user_id	値を返しうる
-S066	算術	one	SELECT user_id + 1 FROM users	deny	user_id	数値IDの加工
-S067	MIN	one	SELECT MIN(user_id) FROM users	deny	user_id	ID値を返す集約
-S068	MAX	one	SELECT MAX(user_id) FROM users	deny	user_id	ID値を返す集約
-S069	LISTAGG	one	SELECT LISTAGG(user_id, ',') WITHIN GROUP (ORDER BY created_at) FROM users	deny	user_id	ID一覧を返す
-S070	ARRAY_AGG	one	SELECT ARRAY_AGG(user_id) FROM users	deny	user_id	ID配列を返す
-S071	ANY_VALUE	one	SELECT ANY_VALUE(user_id) FROM users	deny	user_id	代表値を返す
-S072	CASE結果	one	SELECT CASE WHEN status=1 THEN user_id ELSE NULL END FROM users	deny	user_id	CASEの結果枝にID
-S073	IF結果	one	SELECT IF(status=1, user_id, NULL) FROM users	deny	user_id	IFの結果枝にID
-S074	FIRST_VALUE	one	SELECT FIRST_VALUE(user_id) OVER (ORDER BY created_at) FROM users	deny	user_id	ウィンドウ関数がIDを返す
-S075	LAST_VALUE	one	SELECT LAST_VALUE(user_id) OVER (ORDER BY created_at ROWS BETWEEN UNBOUNDED PRECEDING AND UNBOUNDED FOLLOWING) FROM users	deny	user_id	ウィンドウ関数がIDを返す
-S076	LAG	one	SELECT LAG(user_id) OVER (ORDER BY created_at) FROM users	deny	user_id	前行IDを返す
-S077	LEAD	one	SELECT LEAD(user_id) OVER (ORDER BY created_at) FROM users	deny	user_id	次行IDを返す
-S078	スカラー副問合せ	one	SELECT (SELECT user_id FROM users LIMIT 1) AS uid	deny	user_id	スカラー副問合せがIDを返す
-S079	CTE伝播	one	WITH x AS (SELECT user_id FROM users) SELECT user_id FROM x	deny	user_id	CTE越し
-S080	CTE別名伝播	one	WITH x AS (SELECT user_id AS internal_key FROM users) SELECT internal_key FROM x	deny	user_id	別名を追跡
-S081	CTE多段別名	one	WITH a AS (SELECT user_id AS x FROM users), b AS (SELECT x AS y FROM a) SELECT y FROM b	deny	user_id	多段別名
-S082	CTE列名リスト	one	WITH x(uid) AS (SELECT user_id FROM users) SELECT uid FROM x	deny	user_id	CTE列名リスト
-S083	副問合せ別名	one	SELECT x.uid FROM (SELECT user_id AS uid FROM users) x	deny	user_id	派生表別名
-S084	副問合せ列名リスト	one	SELECT x.uid FROM (SELECT user_id FROM users) AS x(uid)	deny	user_id	派生表列名リスト
-S085	UNION片枝	one	SELECT name FROM users UNION ALL SELECT user_id FROM users	deny	user_id	片枝がID
-S086	UNION両枝	one	SELECT user_id FROM users UNION ALL SELECT user_id FROM old_users	deny	user_id	両枝がID
-S087	派生STAR	one	WITH x AS (SELECT user_id, amount FROM users) SELECT * FROM x	deny	user_id	派生表STARがIDを展開
-S088	派生修飾STAR	one	WITH x AS (SELECT user_id, amount FROM users) SELECT x.* FROM x	deny	user_id	修飾STAR
-S089	基表STAR	one	SELECT * FROM users	deny	__select_star__	スキーマ不明の基表STAR
-S090	基表修飾STAR	one	SELECT u.* FROM users u	deny	__select_star__	スキーマ不明の修飾STAR
-S091	CTE内部基表STAR伝播	one	WITH x AS (SELECT * FROM users) SELECT user_id FROM x	deny	user_id	未展開STARから機微名を参照
-S092	CTE内部基表STAR最終STAR	one	WITH x AS (SELECT * FROM users) SELECT * FROM x	deny	__select_star__	未展開STARが最終出力へ流れる
-S093	RETURNING	one	UPDATE users SET flag=1 WHERE user_id='u1' RETURNING user_id	deny	user_id	RETURNINGでIDを返す
-S094	DELETE RETURNING	one	DELETE FROM users WHERE user_id='u1' RETURNING MD5(user_id)	deny	user_id	RETURNING加工値
-S095	複数文混在	one	UPDATE users SET flag=1 WHERE user_id='u1'; SELECT user_id FROM users	deny	user_id	1文でも結果露出なら停止
-S096	2列COUNT	two	SELECT COUNT(user_id), COUNT(email) FROM users	allow		両方とも件数
-S097	2列COUNT DISTINCT	two	SELECT COUNT(DISTINCT user_id), COUNT(DISTINCT email) FROM users	allow		両方とも重複除外件数
-S098	2列内部WHERE	two	SELECT name FROM users WHERE user_id='u1' AND email LIKE '%@example.com'	allow		両方とも条件だけ
-S099	2列JOIN	two	SELECT a.amount FROM a JOIN b ON a.user_id=b.user_id AND a.email=b.email	allow		両方ともJOIN条件
-S100	2列GROUP	two	SELECT COUNT(*) FROM users GROUP BY user_id, email	allow		両方ともグループ軸
-S101	2列CASE条件	two	SELECT CASE WHEN user_id='u1' AND email='a@example.com' THEN 1 ELSE 0 END FROM users	allow		条件だけ
-S102	2列CTE捨てる	two	WITH x AS (SELECT user_id, email, amount FROM users) SELECT SUM(amount) FROM x	allow		CTE内で取得後に捨てる
-S103	2列副問合せCOUNT	two	SELECT COUNT(*) FROM (SELECT user_id, email FROM users) x	allow		外側は件数
-S104	2列派生STAR安全	two	WITH x AS (SELECT name, amount FROM users WHERE user_id='u1' AND email IS NOT NULL) SELECT * FROM x	allow		最終列は安全
-S105	2列片方直接	two	SELECT user_id, name FROM users WHERE email IS NOT NULL	deny	user_id	user_idだけ出力
-S106	2列片方email	two	SELECT email, name FROM users WHERE user_id='u1'	deny	email	emailだけ出力
-S107	2列両方直接	two	SELECT user_id, email FROM users	deny	user_id,email	両方を出力
-S108	2列加工	two	SELECT MD5(user_id), LOWER(email) FROM users	deny	user_id,email	両方加工して出力
-S109	2列CASE枝	two	SELECT CASE WHEN status=1 THEN user_id ELSE email END FROM users	deny	user_id,email	別々の結果枝
-S110	2列CTE別名	two	WITH x AS (SELECT user_id AS k, email AS m FROM users) SELECT k, m FROM x	deny	user_id,email	CTE別名で両方伝播
-S111	2列多段	two	WITH a AS (SELECT user_id AS x, email AS y FROM users), b AS (SELECT x AS p, y AS q FROM a) SELECT p, q FROM b	deny	user_id,email	多段CTE
-S112	2列UNION	two	SELECT user_id FROM users UNION ALL SELECT email FROM users	deny	user_id,email	枝ごとに別機微列
-S113	2列STAR派生	two	WITH x AS (SELECT user_id, email, amount FROM users) SELECT * FROM x	deny	user_id,email	STARで両方出力
-S114	2列RETURNING	two	UPDATE users SET flag=1 RETURNING user_id, email	deny	user_id,email	RETURNINGで両方
-S115	2列混合COUNT	two	SELECT COUNT(user_id), email FROM users GROUP BY email	deny	email	user_idは件数だがemailは生値
-S116	2列混合加工	two	SELECT COUNT(email), SUBSTRING(user_id,1,2) FROM users	deny	user_id	emailは件数、user_idは部分値
-S117	2列内部片方出力	two	WITH x AS (SELECT user_id, email FROM users) SELECT COUNT(user_id), email FROM x GROUP BY email	deny	email	CTE越し混合
+S010	SUM縮約	one	SELECT SUM(user_id) FROM users	allow		合計値への縮約を許可
+S011	AVG縮約	one	SELECT AVG(user_id) FROM users	allow		平均値への縮約を許可
+S012	STDDEV縮約	one	SELECT STDDEV(user_id) FROM users	allow		標準偏差への縮約を許可
+S013	STDDEV POP縮約	one	SELECT STDDEV_POP(user_id) FROM users	allow		母標準偏差への縮約を許可
+S014	VARIANCE縮約	one	SELECT VARIANCE(user_id) FROM users	allow		分散への縮約を許可
+S015	VAR POP縮約	one	SELECT VAR_POP(user_id) FROM users	allow		母分散への縮約を許可
+S016	CORR縮約	one	SELECT CORR(user_id, amount) FROM users	allow		相関係数への縮約を許可
+S017	COVAR縮約	one	SELECT COVAR_SAMP(user_id, amount) FROM users	allow		共分散への縮約を許可
+S018	SUM FILTER縮約	one	SELECT SUM(user_id) FILTER (WHERE status = 1) FROM users	allow		FILTER付き縮約
+S019	WINDOW SUM縮約	one	SELECT SUM(user_id) OVER (PARTITION BY event_date) FROM events	allow		ウィンドウ集約の縮約結果
+S020	WHERE	one	SELECT name FROM users WHERE user_id = 'u1'	allow		WHEREだけで利用
+S021	WHERE IN	one	SELECT name FROM users WHERE user_id IN ('u1','u2')	allow		IN条件
+S022	WHERE BETWEEN	one	SELECT name FROM users WHERE user_id BETWEEN 'a' AND 'z'	allow		BETWEEN条件
+S023	WHERE LIKE	one	SELECT name FROM users WHERE user_id LIKE 'u%'	allow		LIKE条件
+S024	JOIN ON	one	SELECT a.amount FROM sales a JOIN users b ON a.user_id = b.user_id	allow		JOINキーだけ
+S025	JOIN USING	one	SELECT amount FROM sales JOIN users USING (user_id)	allow		USING句だけ
+S026	GROUP BY	one	SELECT COUNT(*) FROM users GROUP BY user_id	allow		グループ軸だけ
+S027	HAVING	one	SELECT status, COUNT(*) FROM users GROUP BY status HAVING MAX(user_id) > 'u0'	allow		HAVINGだけ
+S028	ORDER BY	one	SELECT name FROM users ORDER BY user_id	allow		並び順だけ
+S029	DISTINCT ON相当	one	SELECT DISTINCT name FROM users WHERE user_id IS NOT NULL	allow		出力は非機微列
+S030	QUALIFY	one	SELECT name FROM users QUALIFY ROW_NUMBER() OVER (PARTITION BY user_id ORDER BY created_at) = 1	allow		QUALIFYとpartitionだけ
+S031	ROW_NUMBER	one	SELECT ROW_NUMBER() OVER (PARTITION BY user_id ORDER BY created_at) AS rn FROM users	allow		IDはウィンドウ制御だけ
+S032	RANK	one	SELECT RANK() OVER (ORDER BY user_id) AS rnk FROM users	allow		IDは順位の順序だけ
+S033	LAG非機微	one	SELECT LAG(name) OVER (ORDER BY user_id) FROM users	allow		返る値はname
+S034	FIRST_VALUE非機微	one	SELECT FIRST_VALUE(name) OVER (PARTITION BY user_id ORDER BY created_at) FROM users	allow		返る値はname
+S035	LISTAGG順序	one	SELECT LISTAGG(name, ',') WITHIN GROUP (ORDER BY user_id) FROM users	allow		IDは集約順序だけ
+S036	FILTER条件	one	SELECT SUM(amount) FILTER (WHERE user_id IS NOT NULL) FROM users	allow		IDはFILTER条件だけ
+S037	比較結果	one	SELECT user_id = 'u1' AS is_target FROM users	allow		返るのは真偽値
+S038	NULL判定	one	SELECT user_id IS NULL AS missing FROM users	allow		返るのは真偽値
+S039	IN判定	one	SELECT user_id IN ('u1','u2') AS target FROM users	allow		返るのは真偽値
+S040	CASE条件	one	SELECT CASE WHEN user_id = 'u1' THEN 1 ELSE 0 END AS flag FROM users	allow		IDはCASE条件だけ
+S041	IF条件	one	SELECT IF(user_id = 'u1', 1, 0) AS flag FROM users	allow		IDはIF条件だけ
+S042	DECODE条件	one	SELECT DECODE(user_id, 'u1', 1, 0) AS flag FROM users	allow		DECODEはCASEへ正規化され条件だけ
+S043	EXISTS	one	SELECT EXISTS (SELECT 1 FROM users u WHERE u.user_id = 'u1')	allow		返るのは存在真偽
+S044	相関EXISTS	one	SELECT o.order_id FROM orders o WHERE EXISTS (SELECT 1 FROM users u WHERE u.user_id = o.user_id)	allow		相関条件だけ
+S045	CTE内部	one	WITH x AS (SELECT user_id, amount FROM users) SELECT SUM(amount) FROM x	allow		CTEで取得しても最終出力しない
+S046	CTE条件	one	WITH x AS (SELECT amount FROM users WHERE user_id = 'u1') SELECT * FROM x	allow		CTE最終列は安全
+S047	CTE多段	one	WITH a AS (SELECT user_id, amount FROM users), b AS (SELECT amount FROM a WHERE user_id IS NOT NULL) SELECT SUM(amount) FROM b	allow		多段CTEでIDを捨てる
+S048	CTE別名定数	one	WITH x AS (SELECT 1 AS user_id) SELECT user_id FROM x	allow		機微名の別名でも元値が定数なら許可
+S049	CTE別名COUNT	one	WITH x AS (SELECT COUNT(user_id) AS user_id FROM users) SELECT user_id FROM x	allow		機微名でも中身は件数
+S050	副問合せ内部	one	SELECT SUM(amount) FROM (SELECT user_id, amount FROM users) x	allow		副問合せでIDを捨てる
+S051	副問合せCOUNT	one	SELECT COUNT(*) FROM (SELECT user_id FROM users) x	allow		内側IDでも外側は件数
+S052	スカラー副問合せCOUNT	one	SELECT (SELECT COUNT(user_id) FROM users) AS n	allow		スカラー副問合せの件数
+S053	派生STAR安全	one	WITH x AS (SELECT amount, name FROM users WHERE user_id = 'u1') SELECT * FROM x	allow		派生表の安全列だけをSTAR展開
+S054	派生STAR修飾安全	one	WITH x AS (SELECT amount, name FROM users WHERE user_id = 'u1') SELECT x.* FROM x	allow		修飾STARも安全列だけ
+S055	CTE内部LISTAGG未出力	one	WITH x AS (SELECT LISTAGG(user_id, ',') WITHIN GROUP (ORDER BY created_at) AS ids FROM users) SELECT COUNT(*) FROM x	allow		値列挙集約でも最終出力しなければ許可
+S056	CTE内部MIN未出力	one	WITH x AS (SELECT MIN(user_id) AS min_id, amount FROM users GROUP BY amount) SELECT SUM(amount) FROM x	allow		値選択集約でも最終出力しなければ許可
+S057	CTE内部近似PERCENTILE未出力	one	WITH x AS (SELECT APPROXIMATE PERCENTILE_DISC(0.5) WITHIN GROUP (ORDER BY user_id) AS p50 FROM users) SELECT COUNT(*) FROM x	allow		Redshift近似分位値でも最終出力しなければ許可
+S058	CTE内部基表STAR未出力	one	WITH x AS (SELECT * FROM users) SELECT COUNT(*) FROM x	allow		未解決STARでも最終値を返さなければ許可
+S059	CTE縮約伝播	one	WITH x AS (SELECT SUM(user_id) AS total_id FROM users) SELECT total_id FROM x	allow		許可済み縮約はCTE越しでも許可
+S060	CTE縮約多段	one	WITH a AS (SELECT AVG(user_id) AS avg_id FROM users), b AS (SELECT avg_id AS metric FROM a) SELECT metric FROM b	allow		許可済み縮約の多段別名
+S061	UNION内部条件	one	SELECT name FROM users WHERE user_id='u1' UNION ALL SELECT name FROM old_users WHERE user_id='u2'	allow		両枝とも出力はname
+S062	INTERSECT内部条件	one	SELECT name FROM users WHERE user_id='u1' INTERSECT SELECT name FROM old_users WHERE user_id='u2'	allow		出力はname
+S063	EXCEPT内部条件	one	SELECT name FROM users WHERE user_id='u1' EXCEPT SELECT name FROM old_users WHERE user_id='u2'	allow		出力はname
+S064	UPDATE	one	UPDATE users SET flag = 1 WHERE user_id = 'u1'	allow		RETURNINGなし
+S065	DELETE	one	DELETE FROM users WHERE user_id = 'u1'	allow		RETURNINGなし
+S066	INSERT SELECT	one	INSERT INTO archive(user_id) SELECT user_id FROM users	allow		MCP結果セットには値を返さない
+S067	CTAS	one	CREATE TABLE archive AS SELECT user_id FROM users	allow		作成先へ保存するがLLMへ返さない
+S068	EXPLAIN	one	EXPLAIN SELECT user_id FROM users	allow		返るのは実行計画
+S069	SELECT INTO	one	SELECT user_id INTO temp_users FROM users	allow		結果を表へ格納
+S070	複数文内部のみ	one	UPDATE users SET flag=1 WHERE user_id='u1'; DELETE FROM old_users WHERE user_id='u2'	allow		どちらも結果セットなし
+S071	直接出力	one	SELECT user_id FROM users	deny	user_id	生値
+S072	別名	one	SELECT user_id AS uid FROM users	deny	user_id	別名でも生値
+S073	修飾列	one	SELECT u.user_id FROM users u	deny	user_id	テーブル修飾
+S074	引用列	one	"SELECT ""user_id"" FROM users"	deny	user_id	引用識別子
+S075	大文字列	one	SELECT USER_ID FROM users	deny	user_id	大小文字を無視
+S076	CAST	one	SELECT CAST(user_id AS VARCHAR) FROM users	deny	user_id	型変換しても値由来
+S077	HASH	one	SELECT MD5(user_id) FROM users	deny	user_id	ハッシュも加工値
+S078	SUBSTRING	one	SELECT SUBSTRING(user_id, 1, 3) FROM users	deny	user_id	部分値
+S079	CONCAT	one	SELECT user_id || '-x' FROM users	deny	user_id	連結値
+S080	COALESCE	one	SELECT COALESCE(user_id, 'unknown') FROM users	deny	user_id	代替値付きでも生値を含みうる
+S081	NULLIF	one	SELECT NULLIF(user_id, 'u1') FROM users	deny	user_id	値を返しうる
+S082	算術	one	SELECT user_id + 1 FROM users	deny	user_id	数値IDの加工
+S083	MIN	one	SELECT MIN(user_id) FROM users	deny	user_id	ID値を返す集約
+S084	MAX	one	SELECT MAX(user_id) FROM users	deny	user_id	ID値を返す集約
+S085	LISTAGG	one	SELECT LISTAGG(user_id, ',') WITHIN GROUP (ORDER BY created_at) FROM users	deny	user_id	ID一覧を返す
+S086	ARRAY_AGG	one	SELECT ARRAY_AGG(user_id) FROM users	deny	user_id	ID配列を返す
+S087	ANY_VALUE	one	SELECT ANY_VALUE(user_id) FROM users	deny	user_id	代表値を返す
+S088	GROUP_CONCAT	one	SELECT GROUP_CONCAT(user_id) FROM users	deny	user_id	ID一覧を返す
+S089	STRING_AGG	one	SELECT STRING_AGG(user_id, ',') FROM users	deny	user_id	ID一覧を返す
+S090	JSON_AGG	one	SELECT JSON_AGG(user_id) FROM users	deny	user_id	IDのJSON集合を返す
+S091	MEDIAN	one	SELECT MEDIAN(user_id) FROM users	deny	user_id	入力値由来の中央値を返す
+S092	PERCENTILE CONT	one	SELECT PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY user_id) FROM users	deny	user_id	ORDER BY対象の分位値を返す
+S093	PERCENTILE DISC	one	SELECT PERCENTILE_DISC(0.5) WITHIN GROUP (ORDER BY user_id) FROM users	deny	user_id	入力集合から値を選択して返す
+S094	Redshift近似PERCENTILE DISC	one	SELECT APPROXIMATE PERCENTILE_DISC(0.5) WITHIN GROUP (ORDER BY user_id) FROM users	deny	user_id	Redshift固有の近似分位値構文
+S095	MODE	one	SELECT MODE() WITHIN GROUP (ORDER BY user_id) FROM users	deny	user_id	最頻値を返す
+S096	APPROX PERCENTILE	one	SELECT APPROX_PERCENTILE(user_id, 0.5) FROM users	deny	user_id	近似分位値を返す
+S097	APPROX TOP K	one	SELECT APPROX_TOP_K(user_id) FROM users	deny	user_id	頻出値集合を返す
+S098	MIN BY	one	SELECT MIN_BY(user_id, amount) FROM users	deny	user_id	条件に対応する入力値を返す
+S099	MAX BY	one	SELECT MAX_BY(user_id, amount) FROM users	deny	user_id	条件に対応する入力値を返す
+S100	未知集約	one	SELECT MYSTERY_AGG(user_id) FROM users	deny	user_id	未知関数は安全と証明できないため拒否
+S101	CASE結果	one	SELECT CASE WHEN status=1 THEN user_id ELSE NULL END FROM users	deny	user_id	CASEの結果枝にID
+S102	IF結果	one	SELECT IF(status=1, user_id, NULL) FROM users	deny	user_id	IFの結果枝にID
+S103	FIRST_VALUE	one	SELECT FIRST_VALUE(user_id) OVER (ORDER BY created_at) FROM users	deny	user_id	ウィンドウ関数がIDを返す
+S104	LAST_VALUE	one	SELECT LAST_VALUE(user_id) OVER (ORDER BY created_at ROWS BETWEEN UNBOUNDED PRECEDING AND UNBOUNDED FOLLOWING) FROM users	deny	user_id	ウィンドウ関数がIDを返す
+S105	LAG	one	SELECT LAG(user_id) OVER (ORDER BY created_at) FROM users	deny	user_id	前行IDを返す
+S106	LEAD	one	SELECT LEAD(user_id) OVER (ORDER BY created_at) FROM users	deny	user_id	次行IDを返す
+S107	スカラー副問合せ	one	SELECT (SELECT user_id FROM users LIMIT 1) AS uid	deny	user_id	スカラー副問合せがIDを返す
+S108	CTE伝播	one	WITH x AS (SELECT user_id FROM users) SELECT user_id FROM x	deny	user_id	CTE越し
+S109	CTE別名伝播	one	WITH x AS (SELECT user_id AS internal_key FROM users) SELECT internal_key FROM x	deny	user_id	別名を追跡
+S110	CTE LISTAGG伝播	one	WITH x AS (SELECT LISTAGG(user_id, ',') WITHIN GROUP (ORDER BY created_at) AS ids FROM users) SELECT ids FROM x	deny	user_id	値列挙集約はCTE越しでも拒否
+S111	CTE PERCENTILE伝播	one	WITH x AS (SELECT PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY user_id) AS p50 FROM users) SELECT p50 FROM x	deny	user_id	ordered-set集約はCTE越しでも拒否
+S112	CTE多段別名	one	WITH a AS (SELECT user_id AS x FROM users), b AS (SELECT x AS y FROM a) SELECT y FROM b	deny	user_id	多段別名
+S113	CTE列名リスト	one	WITH x(uid) AS (SELECT user_id FROM users) SELECT uid FROM x	deny	user_id	CTE列名リスト
+S114	副問合せ別名	one	SELECT x.uid FROM (SELECT user_id AS uid FROM users) x	deny	user_id	派生表別名
+S115	副問合せ列名リスト	one	SELECT x.uid FROM (SELECT user_id FROM users) AS x(uid)	deny	user_id	派生表列名リスト
+S116	UNION片枝	one	SELECT name FROM users UNION ALL SELECT user_id FROM users	deny	user_id	片枝がID
+S117	UNION両枝	one	SELECT user_id FROM users UNION ALL SELECT user_id FROM old_users	deny	user_id	両枝がID
+S118	派生STAR	one	WITH x AS (SELECT user_id, amount FROM users) SELECT * FROM x	deny	user_id	派生表STARがIDを展開
+S119	派生修飾STAR	one	WITH x AS (SELECT user_id, amount FROM users) SELECT x.* FROM x	deny	user_id	修飾STAR
+S120	基表STAR	one	SELECT * FROM users	deny	__select_star__	スキーマ不明の基表STAR
+S121	基表修飾STAR	one	SELECT u.* FROM users u	deny	__select_star__	スキーマ不明の修飾STAR
+S122	CTE内部基表STAR伝播	one	WITH x AS (SELECT * FROM users) SELECT user_id FROM x	deny	user_id	未展開STARから機微名を参照
+S123	CTE内部基表STAR最終STAR	one	WITH x AS (SELECT * FROM users) SELECT * FROM x	deny	__select_star__	未展開STARが最終出力へ流れる
+S124	RETURNING	one	UPDATE users SET flag=1 WHERE user_id='u1' RETURNING user_id	deny	user_id	RETURNINGでIDを返す
+S125	DELETE RETURNING	one	DELETE FROM users WHERE user_id='u1' RETURNING MD5(user_id)	deny	user_id	RETURNING加工値
+S126	複数文混在	one	UPDATE users SET flag=1 WHERE user_id='u1'; SELECT user_id FROM users	deny	user_id	1文でも結果露出なら停止
+S127	2列COUNT	two	SELECT COUNT(user_id), COUNT(email) FROM users	allow		両方とも件数
+S128	2列COUNT DISTINCT	two	SELECT COUNT(DISTINCT user_id), COUNT(DISTINCT email) FROM users	allow		両方とも重複除外件数
+S129	2列縮約	two	SELECT AVG(LENGTH(user_id)), AVG(LENGTH(email)) FROM users	allow		両方とも許可済み縮約
+S130	2列縮約CTE	two	WITH x AS (SELECT AVG(LENGTH(user_id)) AS a, STDDEV(LENGTH(email)) AS b FROM users) SELECT a, b FROM x	allow		CTE越しの許可済み縮約
+S131	2列内部WHERE	two	SELECT name FROM users WHERE user_id='u1' AND email LIKE '%@example.com'	allow		両方とも条件だけ
+S132	2列JOIN	two	SELECT a.amount FROM a JOIN b ON a.user_id=b.user_id AND a.email=b.email	allow		両方ともJOIN条件
+S133	2列GROUP	two	SELECT COUNT(*) FROM users GROUP BY user_id, email	allow		両方ともグループ軸
+S134	2列CASE条件	two	SELECT CASE WHEN user_id='u1' AND email='a@example.com' THEN 1 ELSE 0 END FROM users	allow		条件だけ
+S135	2列CTE捨てる	two	WITH x AS (SELECT user_id, email, amount FROM users) SELECT SUM(amount) FROM x	allow		CTE内で取得後に捨てる
+S136	2列副問合せCOUNT	two	SELECT COUNT(*) FROM (SELECT user_id, email FROM users) x	allow		外側は件数
+S137	2列派生STAR安全	two	WITH x AS (SELECT name, amount FROM users WHERE user_id='u1' AND email IS NOT NULL) SELECT * FROM x	allow		最終列は安全
+S138	2列片方直接	two	SELECT user_id, name FROM users WHERE email IS NOT NULL	deny	user_id	user_idだけ出力
+S139	2列片方email	two	SELECT email, name FROM users WHERE user_id='u1'	deny	email	emailだけ出力
+S140	2列両方直接	two	SELECT user_id, email FROM users	deny	user_id,email	両方を出力
+S141	2列加工	two	SELECT MD5(user_id), LOWER(email) FROM users	deny	user_id,email	両方加工して出力
+S142	2列CASE枝	two	SELECT CASE WHEN status=1 THEN user_id ELSE email END FROM users	deny	user_id,email	別々の結果枝
+S143	2列CTE別名	two	WITH x AS (SELECT user_id AS k, email AS m FROM users) SELECT k, m FROM x	deny	user_id,email	CTE別名で両方伝播
+S144	2列多段	two	WITH a AS (SELECT user_id AS x, email AS y FROM users), b AS (SELECT x AS p, y AS q FROM a) SELECT p, q FROM b	deny	user_id,email	多段CTE
+S145	2列UNION	two	SELECT user_id FROM users UNION ALL SELECT email FROM users	deny	user_id,email	枝ごとに別機微列
+S146	2列STAR派生	two	WITH x AS (SELECT user_id, email, amount FROM users) SELECT * FROM x	deny	user_id,email	STARで両方出力
+S147	2列RETURNING	two	UPDATE users SET flag=1 RETURNING user_id, email	deny	user_id,email	RETURNINGで両方
+S148	2列縮約と列挙	two	SELECT SUM(user_id), ARRAY_AGG(email) FROM users	deny	email	user_idは縮約だがemailは配列出力
+S149	2列混合COUNT	two	SELECT COUNT(user_id), email FROM users GROUP BY email	deny	email	user_idは件数だがemailは生値
+S150	2列混合加工	two	SELECT COUNT(email), SUBSTRING(user_id,1,2) FROM users	deny	user_id	emailは件数、user_idは部分値
+S151	2列内部片方出力	two	WITH x AS (SELECT user_id, email FROM users) SELECT COUNT(user_id), email FROM x GROUP BY email	deny	email	CTE越し混合

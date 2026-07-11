@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "mcp-sql-result-guard"
-version = "0.1.0"
+version = "0.2.0"
 description = "A Codex PreToolUse hook that blocks sensitive SQL values from reaching MCP result sets."
 readme = "README.md"
 requires-python = ">=3.10"

@@ -1,5 +1,5 @@
 enabled	column_pattern	allow	action	note
-1	user_id	count,count_distinct,approx_count	deny	Example user identifier
-1	email_address	count,count_distinct,approx_count	deny	Example email address
-1	phone_*	count,count_distinct	deny	Example phone-number columns
+1	user_id	aggregate_reduction	deny	Example user identifier
+1	email_address	aggregate_reduction	deny	Example email address
+1	phone_*	aggregate_reduction	deny	Example phone-number columns
 1	__SELECT_STAR__		deny	Block unresolved final SELECT * projections

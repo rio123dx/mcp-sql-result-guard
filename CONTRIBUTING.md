@@ -4,8 +4,10 @@
 
 ```bash
 python -m pip install -e ".[dev]"
+python -m pip check
 python -m pytest
 python scripts/run_scenarios.py
+python -m build
 ```
 
 ## Pull requests
@@ -16,7 +18,7 @@ Please include:
 - the expected allow/warn/deny result
 - a regression test or scenario row
 - the SQL dialect used
-- an explanation of whether the expression carries a value or only controls computation
+- an explanation of whether the expression carries a value, reduces it, selects it, collects it, or only controls computation
 
 Do not submit real production identifiers, table names, query text, credentials, or user data.
 
