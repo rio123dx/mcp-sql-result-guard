@@ -80,6 +80,8 @@ FROM collected;
    statusMessage = "Checking SQL result columns for configured sensitive values"
    ```
 
+Windowsでは、[サンプルwrapper](examples/codex/run-sql-guard.ps1)を`.codex/hooks/run-sql-guard.ps1`へ配置します。
+
 4. `matcher`を実際のMCP SQL実行ツール名へ変更し、Codexでproject-local hookをレビューして信頼します。
 
 Codexが対象MCPツールを呼ぶ直前にSQLを静的解析し、拒否判定ならMCP呼出し前に停止します。Windows wrapper、動作確認、fail-open／fail-closedを含む詳しい手順は[導入・運用マニュアル](docs/ja/manual.md)を参照してください。
