@@ -164,8 +164,8 @@ The hook recursively looks for non-empty string values under keys named `sql`, `
 
 The current regression suite contains:
 
-- **194 pytest cases**
-- **151 SQL policy scenarios**
+- **199 pytest cases**
+- **156 SQL policy scenarios**
 
 The matrix covers direct projections, transforms, safe reduction aggregates, value-collecting aggregates, ordered-set aggregates, CTEs, nested subqueries, aliases, set operations, window functions, stars, DML, `RETURNING`, malformed input, TSV parsing, and Codex hook JSON integration.
 

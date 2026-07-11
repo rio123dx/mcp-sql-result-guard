@@ -113,8 +113,8 @@ enabled	column_pattern	allow	action	note
 
 ## テスト
 
-- pytest: 194件
-- SQLシナリオ: 151件
+- pytest: 199件
+- SQLシナリオ: 156件
 - Actions: Python 3.10〜3.13でpytest・シナリオ・パッケージビルドを実行
 
 ## 注意

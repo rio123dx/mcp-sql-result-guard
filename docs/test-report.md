@@ -5,11 +5,11 @@ Version: 0.2.0
 
 ## Results
 
-- pytest: **194 passed / 194**
-- SQL policy scenarios: **151 passed / 151**
-  - one sensitive-column ruleset: 126
+- pytest: **199 passed / 199**
+- SQL policy scenarios: **156 passed / 156**
+  - one sensitive-column ruleset: 131
   - two sensitive-column ruleset: 25
-  - expected allow: 81
+  - expected allow: 86
   - expected deny: 70
 - wheel build: passed
 - sdist build: passed
@@ -17,7 +17,7 @@ Version: 0.2.0
 ## New 0.2.0 coverage
 
 - `aggregate_reduction` TSV parsing and count-mask compatibility
-- allowed final reductions: sum, average, standard deviation, variance, correlation, covariance
+- allowed final reductions: sum, average, standard deviation, variance, correlation, covariance, and boolean reductions (`BOOL_AND`, `BOOL_OR`)
 - reduction aggregates through CTEs, aliases, filters, and windows
 - value-selection aggregates: min, max, any-value, arg-min/max
 - value-collection aggregates: list/string/array/JSON aggregation
