@@ -49,11 +49,13 @@ FROM collected;
 
 ## Quick Start
 
-1. Install the CLI.
+1. Install the CLI into a Python 3.10+ environment whose scripts are available on the `PATH` seen by Codex. The hook invokes `mcp-sql-result-guard` by name.
 
    ```bash
    python -m pip install "git+https://github.com/rio123dx/mcp-sql-result-guard.git@v0.2.0"
    ```
+
+   Before configuring the hook, confirm that the command can be resolved with `command -v mcp-sql-result-guard` on WSL/Linux or `Get-Command mcp-sql-result-guard` in Windows PowerShell.
 
 2. Create `.codex/hooks/sensitive_columns.tsv` in the project where Codex runs.
 
@@ -64,6 +66,8 @@ FROM collected;
    ```
 
 3. Add the hook to `.codex/config.toml`.
+
+   If the file already exists, do not overwrite it: add `hooks = true` to its existing `[features]` table, or create that table only when absent, then append the `[[hooks.PreToolUse]]` group. Preserve every unrelated setting and hook, and do not create a second `[features]` table.
 
    ```toml
    [features]
@@ -80,15 +84,15 @@ FROM collected;
    statusMessage = "Checking SQL result columns for configured sensitive values"
    ```
 
-On Windows, place the [sample wrapper](examples/codex/run-sql-guard.ps1) at `.codex/hooks/run-sql-guard.ps1`.
+   On Windows, save the [sample wrapper](examples/codex/run-sql-guard.ps1) as `.codex/hooks/run-sql-guard.ps1`.
 
 4. Replace the matcher with the exact MCP SQL execution tool name, then review and trust the project-local hook in Codex.
 
-Codex runs the guard immediately before the matched MCP tool call. An allowed query proceeds to the MCP tool; a denied query stops before execution. See the [Japanese installation and operations manual](docs/ja/manual.md) for the Windows wrapper, smoke tests, and failure-policy details.
+Codex runs the guard immediately before the matched MCP tool call. An allowed query proceeds to the MCP tool; a denied query stops before execution. Run the [English WSL/Linux or Windows smoke test](examples/README.md#smoke-test) before relying on the hook. The [Japanese installation and operations manual](docs/ja/manual.md) provides the full deployment procedure.
 
-### Enable and review the hook
+### Failure policy and hook scope
 
-Project hooks are discovered from `.codex/config.toml`. Review and trust the hook definition in Codex before relying on it. The matcher is a regular expression over the tool name, so keep it limited to the SQL execution tool rather than every MCP tool.
+The matcher is a regular expression over the tool name, so keep it limited to the SQL execution tool rather than every MCP tool.
 
 Choose the failure policy explicitly:
 

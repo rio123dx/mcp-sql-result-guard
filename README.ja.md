@@ -49,11 +49,13 @@ FROM collected;
 
 ## Quick Start
 
-1. CLIをインストールします。
+1. Python 3.10以上を使い、Codexから見える`PATH`へCLIをインストールします。hookは`mcp-sql-result-guard`をコマンド名で起動します。
 
    ```bash
    python -m pip install "git+https://github.com/rio123dx/mcp-sql-result-guard.git@v0.2.0"
    ```
+
+   hook設定前に、WSL／Linuxでは`command -v mcp-sql-result-guard`、Windows PowerShellでは`Get-Command mcp-sql-result-guard`でコマンドを解決できることを確認します。
 
 2. 利用するプロジェクトに`.codex/hooks/sensitive_columns.tsv`を作成します。
 
@@ -64,6 +66,8 @@ FROM collected;
    ```
 
 3. `.codex/config.toml`へhook設定を追加します。
+
+   既存ファイルがある場合は上書きしません。既存の`[features]`へ`hooks = true`を追加し、`[features]`がない場合だけ新しく作成してから、`[[hooks.PreToolUse]]`グループを追記します。他の設定やhookは残し、`[features]`を重複させないでください。
 
    ```toml
    [features]
@@ -80,15 +84,15 @@ FROM collected;
    statusMessage = "Checking SQL result columns for configured sensitive values"
    ```
 
-Windowsでは、[サンプルwrapper](examples/codex/run-sql-guard.ps1)を`.codex/hooks/run-sql-guard.ps1`へ配置します。
+   Windowsでは、[サンプルwrapper](examples/codex/run-sql-guard.ps1)を`.codex/hooks/run-sql-guard.ps1`として保存します。
 
 4. `matcher`を実際のMCP SQL実行ツール名へ変更し、Codexでproject-local hookをレビューして信頼します。
 
-Codexが対象MCPツールを呼ぶ直前にSQLを静的解析し、拒否判定ならMCP呼出し前に停止します。Windows wrapper、動作確認、fail-open／fail-closedを含む詳しい手順は[導入・運用マニュアル](docs/ja/manual.md)を参照してください。
+Codexが対象MCPツールを呼ぶ直前にSQLを静的解析し、拒否判定ならMCP呼出し前に停止します。[動作確認](docs/ja/manual.md#81-hook単体のsmoke-test)を行ってから利用してください。
 
-### hookの有効化とレビュー
+### fail-open／fail-closedとhookの適用範囲
 
-Codexは`.codex/config.toml`からプロジェクトhookを読み込みます。利用前に、hook定義をCodex上でレビューして信頼してください。matcherはツール名に対する正規表現なので、MCP全体ではなくSQL実行ツールだけへ限定します。
+matcherはツール名に対する正規表現なので、MCP全体ではなくSQL実行ツールだけへ限定します。
 
 解析失敗時の扱いも明示的に選択します。
 
