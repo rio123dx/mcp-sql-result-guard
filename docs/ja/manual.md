@@ -11,10 +11,11 @@
 | `WHERE user_id = ...` | 許可 |
 | `JOIN ... ON a.user_id = b.user_id` | 許可 |
 | CTE・副問合せ内部で保持し、最終出力しない | 許可 |
-| `COUNT(user_id)` | TSVで許可されていれば許可 |
+| `SUM(user_id)`などの安全な縮約集約 | `aggregate_reduction`で許可されていれば許可 |
 | `SELECT user_id` | 拒否 |
 | `SELECT MD5(user_id)` | 拒否 |
 | CTEで別名へ変えて最終出力 | 拒否 |
+| CTE内部だけの危険な集約・`SELECT *` | 最終出力しなければ許可 |
 | 最終結果の未解決`SELECT *` | `__SELECT_STAR__`ルールに従う |
 
 ## 2. 導入前に決めること
@@ -85,9 +86,9 @@ python -m pip install -e ".[dev]"
 
 ```tsv
 enabled	column_pattern	allow	action	note
-1	user_id	count,count_distinct,approx_count	deny	ユーザーIDをLLMへ返さない
-1	email_address	count,count_distinct,approx_count	deny	メールアドレスをLLMへ返さない
-1	phone_*	count,count_distinct	deny	電話番号系
+1	user_id	aggregate_reduction	deny	ユーザーIDをLLMへ返さない
+1	email_address	aggregate_reduction	deny	メールアドレスをLLMへ返さない
+1	phone_*	aggregate_reduction	deny	電話番号系
 1	__SELECT_STAR__		deny	未解決の最終SELECT *を停止
 ```
 
@@ -97,35 +98,87 @@ enabled	column_pattern	allow	action	note
 |---|---|
 | `enabled` | `1`、`true`、`yes`、`on`で有効。`0`等で無効 |
 | `column_pattern` | 大文字小文字を区別しない列名。`phone_*`のようなワイルドカード可 |
-| `allow` | `count`、`count_distinct`、`approx_count`をカンマ区切り |
+| `allow` | `aggregate_reduction`、`count`、`count_distinct`、`approx_count`をカンマ区切り |
 | `action` | `deny`なら停止、`warn`なら警告だけ |
 | `note` | Codexへ返す説明 |
 
 通常のカラムルールは上から最初に一致した行が採用されます。個別名を上、広いワイルドカードを下へ置くと管理しやすくなります。
 
-### 4.3 COUNTの扱い
+### 4.3 `aggregate_reduction`
 
 ```tsv
-1	user_id	count,count_distinct	deny	...
+1	user_id	aggregate_reduction	deny	...
 ```
 
-この場合:
+`aggregate_reduction`は、機微列を既知の統計値・論理値へ縮約した最終出力を許可します。
 
-- `COUNT(user_id)`は許可
-- `COUNT(DISTINCT user_id)`は許可
-- `MIN(user_id)`は拒否
-- `MD5(user_id)`は拒否
+許可対象:
 
-`allow`を空にするとCOUNTも拒否できます。
+- `COUNT`、`COUNT(DISTINCT ...)`、近似重複除外件数
+- `SUM`、`AVG`
+- `STDDEV`、`STDDEV_POP`、`STDDEV_SAMP`
+- `VARIANCE`、`VAR_POP`、`VAR_SAMP`
+- `CORR`、`COVAR_POP`、`COVAR_SAMP`
+- `BOOL_AND`、`BOOL_OR`
 
-### 4.4 SELECT STAR
+`aggregate_reduction`はCOUNT系を含む包括指定です。既存設定との互換性のため、`count`、`count_distinct`、`approx_count`も引き続き利用できます。
+
+COUNT系だけを許可し、`SUM`や`AVG`を許可しない場合:
+
+```tsv
+1	user_id	count,count_distinct,approx_count	deny	...
+```
+
+### 4.4 最終出力時に拒否する集約
+
+入力値そのもの、入力値の一つ、または入力値の集合を返しうる集約は、`aggregate_reduction`を指定していても許可しません。
+
+- `MIN`、`MAX`、`ANY_VALUE`
+- `LISTAGG`、`GROUP_CONCAT`、`STRING_AGG`
+- `ARRAY_AGG`、JSON・オブジェクト集約
+- `MEDIAN`、`PERCENTILE_CONT`、`PERCENTILE_DISC`、`MODE`
+- 近似パーセンタイル、上位値集合
+- `MIN_BY`、`MAX_BY`、`ARG_MIN`、`ARG_MAX`
+- 未知の集約関数、ユーザー定義関数
+
+安全性はallowlistで判定します。SQLGlotが集約として解析したという理由だけで一律許可はしません。
+
+### 4.5 CTE・副問合せでの集約
+
+判定対象はトップレベルの結果列と`RETURNING`です。中間式を作っただけでは拒否しません。
+
+```sql
+-- 許可: LISTAGG結果を作るが、最終結果へ出さない
+WITH x AS (
+    SELECT LISTAGG(user_id, ',') WITHIN GROUP (ORDER BY created_at) AS ids
+    FROM users
+)
+SELECT COUNT(*)
+FROM x;
+```
+
+```sql
+-- 拒否: CTEの別名を通して最終結果へ出す
+WITH x AS (
+    SELECT LISTAGG(user_id, ',') WITHIN GROUP (ORDER BY created_at) AS ids
+    FROM users
+)
+SELECT ids
+FROM x;
+```
+
+同じ原則は`MIN`、`MAX`、パーセンタイル、未知の関数にも適用されます。危険な式でも出力が捨てられれば許可し、最終結果へ届けば拒否します。
+
+### 4.6 SELECT STAR
 
 ```tsv
 1	__SELECT_STAR__		deny	未解決の最終SELECT *を停止
 ```
 
-- `SELECT * FROM base_table`: 列構成不明なので拒否
+- `WITH x AS (SELECT * FROM base_table) SELECT COUNT(*) FROM x`: STARの列値を最終出力しないので許可
 - `WITH x AS (SELECT name, amount FROM t) SELECT * FROM x`: 派生列を追跡し、機微列がなければ許可
+- `WITH x AS (SELECT user_id, amount FROM t) SELECT * FROM x`: 派生STARから機微列が最終出力されるため拒否
+- `SELECT * FROM base_table`: 列構成不明なので拒否
 - `SELECT COUNT(*) FROM t`: 件数なのでSTAR出力とは扱わない
 
 ## 5. Codex設定
@@ -197,14 +250,16 @@ printf '%s' '{
 ## 7. テスト
 
 ```bash
+python -m pip check
 python -m pytest
 python scripts/run_scenarios.py
+python -m build
 ```
 
 現在の構成では:
 
-- pytest 150件
-- SQLシナリオ 117件
+- pytest 194件
+- SQLシナリオ 151件
 
 シナリオは`tests/data/sql_scenarios.tsv`にあり、期待値とSQLを一覧できます。
 
@@ -221,7 +276,7 @@ python scripts/run_scenarios.py
 
 ### バージョン更新
 
-依存ライブラリSQLGlotの更新は解析結果を変える可能性があります。バージョン更新時は117シナリオを必ず再実行し、方言固有SQLも追加してください。
+依存ライブラリSQLGlotの更新は解析結果を変える可能性があります。バージョン更新時は151シナリオを必ず再実行し、方言固有SQLも追加してください。
 
 ### 監査向けに残す情報
 
@@ -253,6 +308,13 @@ MCP_SQL_RESULT_GUARD_DIALECT=redshift
 ```
 
 を実際のDBに合わせます。ただし、リポジトリの回帰テストはRedshift中心です。他方言は固有シナリオを追加してから運用してください。
+
+### 集約関数が拒否された
+
+- TSVの`allow`に`aggregate_reduction`があるか確認
+- 関数が安全な縮約allowlistに含まれるか確認
+- `MIN`、`MAX`、列挙集約、パーセンタイル、未知関数は最終出力時に拒否される
+- 中間処理だけなら、最終SELECTがその列を参照していないか確認
 
 ### SELECT *を許可したい
 

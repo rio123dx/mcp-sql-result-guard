@@ -1,5 +1,5 @@
 enabled	column_pattern	allow	action	note
-1	user_id	count,count_distinct,approx_count	deny	User identifiers must not be returned to the model
-1	email_address	count,count_distinct,approx_count	deny	Email addresses must not be returned to the model
-1	phone_*	count,count_distinct	deny	Phone-number columns must not be returned to the model
+1	user_id	aggregate_reduction	deny	User identifiers must not be returned to the model
+1	email_address	aggregate_reduction	deny	Email addresses must not be returned to the model
+1	phone_*	aggregate_reduction	deny	Phone-number columns must not be returned to the model
 1	__SELECT_STAR__		deny	Block unresolved final SELECT * projections

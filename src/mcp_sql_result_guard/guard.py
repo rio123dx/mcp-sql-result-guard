@@ -7,7 +7,8 @@ The policy is intentionally output-oriented:
   CTEs, and subqueries.
 * A query is blocked only when a final result column (or RETURNING column)
   exposes a sensitive value directly or through a value-preserving transform.
-* COUNT / COUNT DISTINCT / approximate count are treated as safe masks.
+* COUNT masks and configured statistical reduction aggregates are treated as
+  safe outputs; value-selecting and value-collecting aggregates are not.
 * Predicates, EXISTS, CASE conditions, and window partition/order clauses are
   control-only and do not expose the underlying value.
 
@@ -29,6 +30,7 @@ from typing import Any, Iterable, Iterator, Sequence
 import sqlglot
 from sqlglot import exp
 from sqlglot.errors import ParseError
+from sqlglot.tokens import TokenType, Tokenizer
 from sqlglot.optimizer.scope import Scope, build_scope
 
 
@@ -36,8 +38,33 @@ DEFAULT_RULES_PATH = Path(__file__).with_name("default_rules.tsv")
 SQL_ARGUMENT_KEYS = {"sql", "query", "statement"}
 TRUE_VALUES = {"1", "true", "yes", "on"}
 FALSE_VALUES = {"0", "false", "no", "off", ""}
-SUPPORTED_USAGES = {"count", "count_distinct", "approx_count"}
+AGGREGATE_REDUCTION_USAGE = "aggregate_reduction"
+COUNT_USAGES = {"count", "count_distinct", "approx_count"}
+SUPPORTED_USAGES = COUNT_USAGES | {AGGREGATE_REDUCTION_USAGE}
 SUPPORTED_ACTIONS = {"deny", "warn"}
+
+# These aggregate classes return a scalar statistical/logical reduction rather
+# than selecting or collecting source values. The TSV must still opt a column
+# into aggregate_reduction. Unknown aggregates remain value-preserving by
+# default and are therefore denied when a sensitive value reaches final output.
+SAFE_REDUCTION_AGGREGATE_TYPES = tuple(
+    aggregate_type
+    for aggregate_type in (
+        getattr(exp, "Sum", None),
+        getattr(exp, "Avg", None),
+        getattr(exp, "Stddev", None),
+        getattr(exp, "StddevPop", None),
+        getattr(exp, "StddevSamp", None),
+        getattr(exp, "Variance", None),
+        getattr(exp, "VariancePop", None),
+        getattr(exp, "Corr", None),
+        getattr(exp, "CovarPop", None),
+        getattr(exp, "CovarSamp", None),
+        getattr(exp, "LogicalAnd", None),
+        getattr(exp, "LogicalOr", None),
+    )
+    if isinstance(aggregate_type, type)
+)
 
 
 @dataclass(frozen=True)
@@ -147,6 +174,43 @@ def load_rules(path: Path) -> list[Rule]:
     return rules
 
 
+def _normalize_sql_for_parser(sql: str, *, dialect: str) -> str:
+    """Normalize parser gaps without rewriting literals or comments.
+
+    SQLGlot 26.x does not parse Redshift's two-keyword
+    ``APPROXIMATE PERCENTILE_DISC`` spelling. Token positions let us collapse
+    only executable keyword occurrences to ``PERCENTILE_DISC`` while leaving
+    string literals, quoted identifiers, and comments untouched. The guard
+    treats the approximate form with the same value-flow semantics as the
+    discrete percentile form.
+    """
+    if dialect.casefold() != "redshift":
+        return sql
+
+    try:
+        tokens = Tokenizer(dialect=dialect).tokenize(sql)
+    except Exception:
+        return sql
+
+    replacements: list[tuple[int, int, str]] = []
+    for index in range(len(tokens) - 2):
+        first, second, third = tokens[index : index + 3]
+        if (
+            first.token_type is TokenType.VAR
+            and second.token_type is TokenType.VAR
+            and third.token_type is TokenType.L_PAREN
+            and first.text.casefold() == "approximate"
+            and second.text.casefold() == "percentile_disc"
+            and sql[first.end + 1 : second.start].strip() == ""
+            and sql[second.end + 1 : third.start].strip() == ""
+        ):
+            replacements.append((first.start, second.end + 1, "PERCENTILE_DISC"))
+
+    for start, end, replacement in reversed(replacements):
+        sql = f"{sql[:start]}{replacement}{sql[end:]}"
+    return sql
+
+
 def extract_sql_strings(value: Any) -> list[str]:
     """Recursively find SQL-like arguments in an MCP tool_input object."""
     found: list[str] = []
@@ -177,6 +241,17 @@ def find_star_rule(rules: Iterable[Rule]) -> Rule | None:
         if rule.pattern.casefold() == "__select_star__":
             return rule
     return None
+
+
+def _usage_is_allowed(finding: Finding, usage: str) -> bool:
+    if usage in finding.allowed_usages:
+        return True
+    # aggregate_reduction is a convenience umbrella for count-like masks as
+    # well as the explicitly allowlisted statistical reduction aggregates.
+    return (
+        AGGREGATE_REDUCTION_USAGE in finding.allowed_usages
+        and usage in COUNT_USAGES
+    )
 
 
 def _deduplicate_findings(findings: Iterable[Finding]) -> list[Finding]:
@@ -348,22 +423,46 @@ class OutputFlowAnalyzer:
             return [
                 replace(finding, usage=usage)
                 for finding in inner
-                if usage not in finding.allowed_usages
+                if not _usage_is_allowed(finding, usage)
             ]
         if isinstance(node, exp.ApproxDistinct):
+            usage = "approx_count"
             inner = self._inspect_value(
                 node.this,
                 scope,
                 output_expression=output_expression,
-                path=f"{path} → approx_count",
+                path=f"{path} → {usage}",
             )
             return [
-                replace(finding, usage="approx_count")
+                replace(finding, usage=usage)
                 for finding in inner
-                if "approx_count" not in finding.allowed_usages
+                if not _usage_is_allowed(finding, usage)
             ]
         if hasattr(exp, "CountIf") and isinstance(node, exp.CountIf):
             return []
+
+        if SAFE_REDUCTION_AGGREGATE_TYPES and isinstance(
+            node, SAFE_REDUCTION_AGGREGATE_TYPES
+        ):
+            usage = AGGREGATE_REDUCTION_USAGE
+            findings: list[Finding] = []
+            for key, value in node.args.items():
+                if key in {"order", "partition_by", "spec", "where", "on"}:
+                    continue
+                for child in _iter_expressions(value):
+                    findings.extend(
+                        self._inspect_value(
+                            child,
+                            scope,
+                            output_expression=output_expression,
+                            path=f"{path} → {usage} → {type(node).__name__}.{key}",
+                        )
+                    )
+            return [
+                replace(finding, usage=usage)
+                for finding in findings
+                if not _usage_is_allowed(finding, usage)
+            ]
 
         # A predicate/EXISTS returns a boolean rather than the source value.
         if isinstance(node, exp.Predicate):
@@ -422,7 +521,7 @@ class OutputFlowAnalyzer:
                 path=f"{path} → window value",
             )
 
-        # FILTER and WITHIN GROUP conditions/order do not become cell values.
+        # FILTER conditions do not become cell values.
         if isinstance(node, exp.Filter):
             return self._inspect_value(
                 node.this,
@@ -431,12 +530,32 @@ class OutputFlowAnalyzer:
                 path=f"{path} → filtered value",
             )
         if isinstance(node, exp.WithinGroup):
-            return self._inspect_value(
+            findings = self._inspect_value(
                 node.this,
                 scope,
                 output_expression=output_expression,
                 path=f"{path} → aggregate value",
             )
+            # LISTAGG/GROUP_CONCAT returns its first argument; WITHIN GROUP order
+            # is only control metadata. For other ordered-set aggregates
+            # (PERCENTILE_CONT/DISC, MODE, or unknown functions), the ORDER BY
+            # expression is the value distribution being returned and must be
+            # traced. Unknown ordered-set aggregates therefore fail safely.
+            if not isinstance(node.this, exp.GroupConcat):
+                order = node.args.get("expression")
+                if isinstance(order, exp.Order):
+                    for ordered in order.expressions:
+                        value = ordered.this if isinstance(ordered, exp.Ordered) else ordered
+                        if isinstance(value, exp.Expression):
+                            findings.extend(
+                                self._inspect_value(
+                                    value,
+                                    scope,
+                                    output_expression=output_expression,
+                                    path=f"{path} → ordered-set value",
+                                )
+                            )
+            return findings
 
         if isinstance(node, exp.Subquery):
             sub_scope = build_scope(node.this)
@@ -474,9 +593,10 @@ class OutputFlowAnalyzer:
         if isinstance(node, (exp.Literal, exp.Null, exp.Boolean, exp.Identifier, exp.Var)):
             return []
 
-        # Other transforms (CAST, hash, substring, concatenation, arithmetic,
-        # MIN/MAX/LISTAGG, JSON extraction, LAG/FIRST_VALUE...) preserve or derive
-        # a value. Follow all expression-valued arguments.
+        # Other transforms and aggregates (CAST, hash, substring, MIN/MAX,
+        # LISTAGG/ARRAY_AGG/JSON aggregates, quantiles, LAG/FIRST_VALUE, unknown
+        # aggregate functions...) preserve, select, or collect source values.
+        # Follow all expression-valued arguments and deny sensitive final output.
         findings: list[Finding] = []
         for key, value in node.args.items():
             # Generic ordering metadata is control-only. Value arguments are
@@ -740,7 +860,8 @@ def inspect_sql(
     *,
     dialect: str = "redshift",
 ) -> list[Finding]:
-    statements = sqlglot.parse(sql, read=dialect)
+    normalized_sql = _normalize_sql_for_parser(sql, dialect=dialect)
+    statements = sqlglot.parse(normalized_sql, read=dialect)
     findings: list[Finding] = []
     for statement in statements:
         if statement is not None:

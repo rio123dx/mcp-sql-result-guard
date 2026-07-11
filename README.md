@@ -5,14 +5,14 @@
 
 A lightweight Codex `PreToolUse` hook that statically checks SQL before an MCP tool runs and blocks queries whose **final result columns may expose configured sensitive values**.
 
-The guard is output-oriented. Sensitive columns may still be used internally for filtering, joins, grouping, ordering, CTEs, and subqueries when their values do not flow into the final result set.
+The guard is output-oriented. Sensitive columns may be used internally for filters, joins, grouping, ordering, CTEs, subqueries, intermediate aggregates, and intermediate stars when those values do not flow into the top-level result set or `RETURNING`.
 
 - Japanese: [README.ja.md](README.ja.md)
 - Japanese installation and operations manual: [docs/ja/manual.md](docs/ja/manual.md)
 
 ## Why this exists
 
-A rule such as “reject every query that mentions `user_id`” is often too restrictive for analytics. This project instead distinguishes between internal use and value exposure.
+A rule such as “reject every query that mentions `user_id`” is often too restrictive for analytics. This project distinguishes internal computation from value exposure.
 
 ```sql
 -- Allowed: user_id is only a predicate input.
@@ -28,44 +28,64 @@ FROM orders;
 ```
 
 ```sql
--- Allowed: the CTE contains user_id, but the final result only returns SUM(amount).
+-- Allowed: a value-collecting aggregate exists only inside the CTE.
 WITH scoped AS (
-    SELECT user_id, amount
+    SELECT LISTAGG(user_id, ',') WITHIN GROUP (ORDER BY created_at) AS ids
     FROM orders
 )
-SELECT SUM(amount)
+SELECT COUNT(*)
 FROM scoped;
 ```
 
 ```sql
--- Blocked: the alias is traced through the CTE.
+-- Blocked: the collected values are returned through a CTE alias.
 WITH scoped AS (
-    SELECT user_id AS internal_key
+    SELECT LISTAGG(user_id, ',') WITHIN GROUP (ORDER BY created_at) AS ids
     FROM orders
 )
-SELECT internal_key
+SELECT ids
 FROM scoped;
 ```
 
 ## Policy model
 
-By default, the included TSV example treats these as safe masks:
+### Configured reduction aggregates
 
-- `COUNT(column)`
-- `COUNT(DISTINCT column)`
-- approximate distinct count
+The `aggregate_reduction` rule mask allows the following scalar statistical or logical reductions when they reach final output:
 
-The following are treated as value exposure and are blocked when they reach a final output column:
+- `COUNT`, `COUNT(DISTINCT ...)`, and approximate distinct count
+- `SUM`, `AVG`
+- `STDDEV`, `STDDEV_POP`, `STDDEV_SAMP`
+- `VARIANCE`, `VAR_POP`, `VAR_SAMP`
+- `CORR`, `COVAR_POP`, `COVAR_SAMP`
+- `BOOL_AND`, `BOOL_OR`
 
-- direct projection
-- aliases, including multi-stage CTE aliases
-- casts, hashes, substrings, concatenation, and arithmetic
-- `MIN`, `MAX`, `LISTAGG`, arrays, JSON extraction, and similar transforms
-- value-returning window functions such as `FIRST_VALUE`, `LAG`, and `LEAD`
-- DML `RETURNING`
-- unresolved final `SELECT *`, when enabled by the special TSV rule
+Legacy masks `count`, `count_distinct`, and `approx_count` remain supported. `aggregate_reduction` is an umbrella that also permits those count forms.
 
-Predicates, `EXISTS`, `CASE` conditions, window partition/order clauses, and other control-only uses are allowed by the lightweight policy. See [docs/limitations.md](docs/limitations.md) for the security boundary.
+### Value-carrying aggregates
+
+These remain blocked when a configured sensitive value reaches final output:
+
+- `MIN`, `MAX`, `ANY_VALUE`
+- `LISTAGG`, `GROUP_CONCAT`, `STRING_AGG`
+- `ARRAY_AGG` and JSON/object collection aggregates
+- `MEDIAN`, `PERCENTILE_CONT`, `PERCENTILE_DISC`, `MODE`
+- approximate percentile/top-k functions
+- `MIN_BY`, `MAX_BY`, `ARG_MIN`, `ARG_MAX`
+- unknown aggregate functions and UDF-like calls
+
+This classification is deliberately allowlist-based. A newly encountered aggregate is not assumed safe.
+
+### Final-output rule
+
+The classification is applied only when the expression can reach a top-level result column or DML `RETURNING`.
+
+- An unsafe aggregate used only inside a CTE is allowed if its output is discarded.
+- A base-table `SELECT *` used only inside a CTE is allowed if no unknown star reaches final output.
+- A derived-table final `SELECT *` is expanded through known projections and checked column by column.
+- An unresolved final base-table `SELECT *` can be denied with `__SELECT_STAR__`.
+
+Predicates, `EXISTS`, `CASE` conditions, window partition/order clauses, aggregate `FILTER` predicates, and other control-only uses are allowed by the lightweight policy. See [docs/limitations.md](docs/limitations.md) for the security boundary.
 
 ## Installation
 
@@ -83,13 +103,13 @@ python -m pip install -e ".[dev]"
 
 ## Rules
 
-Rules are tab-separated values so that policy owners can add columns without editing Python.
+Rules are tab-separated values so policy owners can add columns without editing Python.
 
 ```tsv
 enabled	column_pattern	allow	action	note
-1	user_id	count,count_distinct,approx_count	deny	User identifiers must not be returned to the model
-1	email_address	count,count_distinct,approx_count	deny	Email addresses must not be returned to the model
-1	phone_*	count,count_distinct	deny	Phone-number columns must not be returned to the model
+1	user_id	aggregate_reduction	deny	User identifiers must not be returned to the model
+1	email_address	aggregate_reduction	deny	Email addresses must not be returned to the model
+1	phone_*	aggregate_reduction	deny	Phone-number columns must not be returned to the model
 1	__SELECT_STAR__		deny	Block unresolved final SELECT * projections
 ```
 
@@ -97,7 +117,7 @@ enabled	column_pattern	allow	action	note
 |---|---|
 | `enabled` | `1`, `true`, `yes`, or `on` enables the row. |
 | `column_pattern` | Case-insensitive column name pattern. Shell-style `*` wildcards are supported. |
-| `allow` | Comma-separated masks allowed for this column: `count`, `count_distinct`, `approx_count`. |
+| `allow` | Comma-separated masks: `aggregate_reduction`, `count`, `count_distinct`, `approx_count`. |
 | `action` | `deny` blocks the MCP call; `warn` adds model-visible context and allows it. |
 | `note` | Human-readable explanation included in the hook result. |
 
@@ -105,14 +125,12 @@ Rules are evaluated from top to bottom; the first matching column rule wins. `__
 
 ## Codex setup
 
-Codex command hooks receive one JSON object on standard input. A `PreToolUse` hook can match MCP tool names, inspect all MCP arguments under `tool_input`, deny a tool call with `permissionDecision: "deny"`, or add non-blocking context with `additionalContext`.
+Codex command hooks receive one JSON object on standard input. A `PreToolUse` hook can match MCP tool names, inspect MCP arguments under `tool_input`, deny a tool call with `permissionDecision: "deny"`, or add non-blocking context with `additionalContext`.
 
 1. Install this package in an environment visible to Codex.
 2. Copy [examples/rules/sensitive_columns.tsv](examples/rules/sensitive_columns.tsv) to a project-controlled path.
 3. Adapt [examples/codex/config.toml](examples/codex/config.toml) to the MCP server and SQL tool names used in your environment.
 4. Review and trust the project hook in Codex.
-
-Example:
 
 ```toml
 [features]
@@ -140,31 +158,23 @@ Official Codex hook documentation: <https://developers.openai.com/codex/hooks>
 
 ## Hook input discovery
 
-The hook recursively looks for non-empty string values under keys named:
-
-- `sql`
-- `query`
-- `statement`
-
-This makes it usable with MCP tools that nest their SQL arguments. Narrow the Codex matcher to the actual SQL execution tool so unrelated tools are not inspected unnecessarily.
+The hook recursively looks for non-empty string values under keys named `sql`, `query`, or `statement`. Narrow the Codex matcher to the actual SQL execution tool so unrelated tools are not inspected unnecessarily.
 
 ## Test coverage
 
 The current regression suite contains:
 
-- **150 pytest cases**
-- **117 SQL policy scenarios**
+- **199 pytest cases**
+- **156 SQL policy scenarios**
 
-The scenario matrix covers direct projections, transforms, joins, filters, CTEs, nested subqueries, aliases, set operations, window functions, stars, DML, `RETURNING`, malformed input, TSV parsing, and Codex hook JSON integration.
-
-Run:
+The matrix covers direct projections, transforms, safe reduction aggregates, value-collecting aggregates, ordered-set aggregates, CTEs, nested subqueries, aliases, set operations, window functions, stars, DML, `RETURNING`, malformed input, TSV parsing, and Codex hook JSON integration.
 
 ```bash
+python -m pip check
 python -m pytest
 python scripts/run_scenarios.py
+python -m build
 ```
-
-The scenario runner writes ignored local files `scenario-results.tsv` and `scenario-summary.txt`.
 
 ## Supported scope
 
@@ -172,16 +182,9 @@ The code accepts a SQLGlot dialect through `MCP_SQL_RESULT_GUARD_DIALECT`, but t
 
 ## Security boundary
 
-This is a best-effort, pre-execution guardrail. It is not a substitute for:
+This is a best-effort, pre-execution guardrail. Statistical reductions can still leak information through small groups, repeated queries, differencing, or auxiliary knowledge. It is not a substitute for database permissions, dynamic masking, row/column security, MCP-side enforcement, minimum group-size rules, audit logging, or post-execution result filtering.
 
-- database permissions
-- dynamic data masking
-- column-level or row-level security
-- MCP-side enforcement
-- audit logging
-- a post-execution result filter
-
-Codex `PreToolUse` hooks are themselves guardrails rather than complete enforcement boundaries. See [SECURITY.md](SECURITY.md), [docs/architecture.md](docs/architecture.md), and [docs/limitations.md](docs/limitations.md).
+See [SECURITY.md](SECURITY.md), [docs/architecture.md](docs/architecture.md), and [docs/limitations.md](docs/limitations.md).
 
 ## License
 

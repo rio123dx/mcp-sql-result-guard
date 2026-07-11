@@ -1,17 +1,35 @@
 # Regression test report
 
 Date: 2026-07-11
+Version: 0.2.0
 
 ## Results
 
-- pytest: **150 passed / 150**
-- SQL policy scenarios: **117 passed / 117**
-  - one sensitive-column ruleset: 95
-  - two sensitive-column ruleset: 22
-  - expected allow: 63
-  - expected deny: 54
+- pytest: **199 passed / 199**
+- SQL policy scenarios: **156 passed / 156**
+  - one sensitive-column ruleset: 131
+  - two sensitive-column ruleset: 25
+  - expected allow: 86
+  - expected deny: 70
+- wheel build: passed
+- sdist build: passed
 
-## Coverage groups
+## New 0.2.0 coverage
+
+- `aggregate_reduction` TSV parsing and count-mask compatibility
+- allowed final reductions: sum, average, standard deviation, variance, correlation, covariance, and boolean reductions (`BOOL_AND`, `BOOL_OR`)
+- reduction aggregates through CTEs, aliases, filters, and windows
+- value-selection aggregates: min, max, any-value, arg-min/max
+- value-collection aggregates: list/string/array/JSON aggregation
+- ordered-set values: percentile and mode
+- Redshift `APPROXIMATE PERCENTILE_DISC` parser normalization and internal-only behavior
+- approximate percentile and top-k results
+- unknown aggregate functions defaulting to deny
+- unsafe aggregates allowed when their intermediate output is discarded
+- unresolved internal stars allowed when they do not reach final output
+- package distribution build
+
+## Existing coverage groups
 
 - direct and aliased projections
 - quoted and case-varied identifiers
