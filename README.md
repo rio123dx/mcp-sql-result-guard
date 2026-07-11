@@ -13,7 +13,43 @@ You may want an LLM to analyze data with SQL without returning raw identifiers t
 
 `mcp-sql-result-guard` distinguishes **internal SQL use** from **value exposure**. It starts at the top-level result columns or DML `RETURNING`, traces value flow backward, and applies a TSV policy to configured column names.
 
-It is designed for data engineers, analytics engineers, data platform engineers, and developers connecting LLM agents to data warehouses through MCP.
+## Quick Start
+
+You need the installed CLI plus a TSV policy and Codex hook configuration in the project that uses the MCP SQL tool. A virtual environment is optional.
+
+1. Install the CLI.
+
+   ```bash
+   python -m pip install "git+https://github.com/rio123dx/mcp-sql-result-guard.git@v0.2.0"
+   ```
+
+2. Create `.codex/hooks/sensitive_columns.tsv` in the project.
+
+   ```tsv
+   enabled	column_pattern	allow	action	note
+   1	user_id	aggregate_reduction	deny	Do not return user identifiers to the model
+   1	__SELECT_STAR__		deny	Block unresolved final SELECT * projections
+   ```
+
+3. Merge the hook into the existing `.codex/config.toml`; do not overwrite other settings or hooks.
+
+   ```toml
+   [features]
+   hooks = true
+
+   [[hooks.PreToolUse]]
+   matcher = "^mcp__warehouse__execute_sql$"
+
+   [[hooks.PreToolUse.hooks]]
+   type = "command"
+   command = 'MCP_SQL_RESULT_GUARD_RULES="$(git rev-parse --show-toplevel)/.codex/hooks/sensitive_columns.tsv" MCP_SQL_RESULT_GUARD_DIALECT=redshift MCP_SQL_RESULT_GUARD_FAIL_OPEN=true mcp-sql-result-guard'
+   timeout = 10
+   statusMessage = "Checking SQL result columns for configured sensitive values"
+   ```
+
+4. Replace the matcher with the actual MCP SQL execution tool name, then review and trust the project-local hook in Codex.
+
+Codex runs the static check immediately before the matched MCP call. A deny decision stops the call before SQL execution. See the [Japanese installation and operations manual](docs/ja/manual.md) for Windows setup, smoke tests, and failure-policy details.
 
 ## Representative decisions
 
@@ -48,95 +84,6 @@ WITH collected AS (
 SELECT ids
 FROM collected;
 ```
-
-## Quick start
-
-The project is currently installed from a cloned source tree; this guide does not assume a PyPI release. Replace the example matcher with the exact MCP SQL tool name shown by Codex in your environment.
-
-### WSL or Linux
-
-Clone the repository, create a Python 3.10+ virtual environment, install from source, and copy the example policy and hook configuration:
-
-```bash
-git clone https://github.com/rio123dx/mcp-sql-result-guard.git
-cd mcp-sql-result-guard
-
-python3 -m venv .venv
-source .venv/bin/activate
-python -m pip install --upgrade pip
-python -m pip install .
-
-mkdir -p .codex/hooks
-cp examples/rules/sensitive_columns.tsv .codex/hooks/sensitive_columns.tsv
-cp examples/codex/config.toml .codex/config.toml
-```
-
-Edit `.codex/config.toml` and replace this placeholder with the exact MCP SQL execution tool name:
-
-```toml
-matcher = "^mcp__warehouse__execute_sql$"
-```
-
-Smoke-test an allowed query and a denied query through standard input:
-
-```bash
-export MCP_SQL_RESULT_GUARD_RULES="$PWD/.codex/hooks/sensitive_columns.tsv"
-export MCP_SQL_RESULT_GUARD_DIALECT=redshift
-export MCP_SQL_RESULT_GUARD_FAIL_OPEN=true
-
-printf '%s' '{"hook_event_name":"PreToolUse","tool_name":"mcp__warehouse__execute_sql","tool_input":{"sql":"SELECT order_total FROM orders WHERE user_id IS NOT NULL"}}' \
-  | ./.venv/bin/mcp-sql-result-guard
-
-printf '%s' '{"hook_event_name":"PreToolUse","tool_name":"mcp__warehouse__execute_sql","tool_input":{"sql":"SELECT user_id FROM orders"}}' \
-  | ./.venv/bin/mcp-sql-result-guard
-```
-
-The first command should produce no stdout. The second should return JSON containing `permissionDecision: "deny"`.
-
-### Windows PowerShell
-
-```powershell
-git clone https://github.com/rio123dx/mcp-sql-result-guard.git
-Set-Location mcp-sql-result-guard
-
-py -3 -m venv .venv
-& .\.venv\Scripts\python.exe -m pip install --upgrade pip
-& .\.venv\Scripts\python.exe -m pip install .
-
-New-Item -ItemType Directory -Force .codex\hooks | Out-Null
-Copy-Item examples\rules\sensitive_columns.tsv .codex\hooks\sensitive_columns.tsv
-Copy-Item examples\codex\config.toml .codex\config.toml
-Copy-Item examples\codex\run-sql-guard.ps1 .codex\hooks\run-sql-guard.ps1
-```
-
-Edit `.codex\config.toml` and replace the matcher with the exact MCP SQL execution tool name. Then smoke-test both decisions:
-
-```powershell
-$env:MCP_SQL_RESULT_GUARD_RULES = (Resolve-Path .codex\hooks\sensitive_columns.tsv)
-$env:MCP_SQL_RESULT_GUARD_DIALECT = "redshift"
-$env:MCP_SQL_RESULT_GUARD_FAIL_OPEN = "true"
-$env:PYTHONUTF8 = "1"
-$env:PYTHONIOENCODING = "utf-8"
-
-$allow = '{"hook_event_name":"PreToolUse","tool_name":"mcp__warehouse__execute_sql","tool_input":{"sql":"SELECT order_total FROM orders WHERE user_id IS NOT NULL"}}'
-$allow | & .\.venv\Scripts\mcp-sql-result-guard.exe
-
-$deny = '{"hook_event_name":"PreToolUse","tool_name":"mcp__warehouse__execute_sql","tool_input":{"sql":"SELECT user_id FROM orders"}}'
-$deny | & .\.venv\Scripts\mcp-sql-result-guard.exe
-```
-
-The first command should produce no stdout; the second should return a deny decision.
-
-### Enable and review the hook
-
-Project hooks are discovered from `.codex/config.toml`. Review and trust the copied hook definition in Codex before relying on it. The matcher is a regular expression over the tool name, so keep it limited to the SQL execution tool rather than every MCP tool.
-
-Choose the failure policy explicitly:
-
-- `MCP_SQL_RESULT_GUARD_FAIL_OPEN=true` (default): warn and allow when SQL or rules cannot be parsed.
-- `MCP_SQL_RESULT_GUARD_FAIL_OPEN=false`: deny when analysis cannot complete.
-
-See the [Codex hooks documentation](https://developers.openai.com/codex/hooks) for hook discovery, trust review, matcher behavior, and `PreToolUse` output.
 
 ## Minimal TSV policy
 
