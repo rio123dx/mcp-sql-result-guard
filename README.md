@@ -13,44 +13,6 @@ You may want an LLM to analyze data with SQL without returning raw identifiers t
 
 `mcp-sql-result-guard` distinguishes **internal SQL use** from **value exposure**. It starts at the top-level result columns or DML `RETURNING`, traces value flow backward, and applies a TSV policy to configured column names.
 
-## Quick Start
-
-You need the installed CLI plus a TSV policy and Codex hook configuration in the project that uses the MCP SQL tool. A virtual environment is optional.
-
-1. Install the CLI.
-
-   ```bash
-   python -m pip install "git+https://github.com/rio123dx/mcp-sql-result-guard.git@v0.2.0"
-   ```
-
-2. Create `.codex/hooks/sensitive_columns.tsv` in the project.
-
-   ```tsv
-   enabled	column_pattern	allow	action	note
-   1	user_id	aggregate_reduction	deny	Do not return user identifiers to the model
-   1	__SELECT_STAR__		deny	Block unresolved final SELECT * projections
-   ```
-
-3. Merge the hook into the existing `.codex/config.toml`; do not overwrite other settings or hooks.
-
-   ```toml
-   [features]
-   hooks = true
-
-   [[hooks.PreToolUse]]
-   matcher = "^mcp__warehouse__execute_sql$"
-
-   [[hooks.PreToolUse.hooks]]
-   type = "command"
-   command = 'MCP_SQL_RESULT_GUARD_RULES="$(git rev-parse --show-toplevel)/.codex/hooks/sensitive_columns.tsv" MCP_SQL_RESULT_GUARD_DIALECT=redshift MCP_SQL_RESULT_GUARD_FAIL_OPEN=true mcp-sql-result-guard'
-   timeout = 10
-   statusMessage = "Checking SQL result columns for configured sensitive values"
-   ```
-
-4. Replace the matcher with the actual MCP SQL execution tool name, then review and trust the project-local hook in Codex.
-
-Codex runs the static check immediately before the matched MCP call. A deny decision stops the call before SQL execution. See the [Japanese installation and operations manual](docs/ja/manual.md) for Windows setup, smoke tests, and failure-policy details.
-
 ## Representative decisions
 
 Assume `user_id` is configured as sensitive with `aggregate_reduction` allowed.
@@ -85,7 +47,55 @@ SELECT ids
 FROM collected;
 ```
 
-## Minimal TSV policy
+## Quick Start
+
+1. Install the CLI.
+
+   ```bash
+   python -m pip install "git+https://github.com/rio123dx/mcp-sql-result-guard.git@v0.2.0"
+   ```
+
+2. Create `.codex/hooks/sensitive_columns.tsv` in the project where Codex runs.
+
+   ```tsv
+   enabled	column_pattern	allow	action	note
+   1	user_id	aggregate_reduction	deny	Do not return user identifiers to the model
+   1	__SELECT_STAR__		deny	Block unresolved final SELECT * projections
+   ```
+
+3. Add the hook to `.codex/config.toml`.
+
+   ```toml
+   [features]
+   hooks = true
+
+   [[hooks.PreToolUse]]
+   matcher = "^mcp__warehouse__execute_sql$"
+
+   [[hooks.PreToolUse.hooks]]
+   type = "command"
+   command = 'MCP_SQL_RESULT_GUARD_RULES="$(git rev-parse --show-toplevel)/.codex/hooks/sensitive_columns.tsv" MCP_SQL_RESULT_GUARD_DIALECT=redshift MCP_SQL_RESULT_GUARD_FAIL_OPEN=true mcp-sql-result-guard'
+   command_windows = "powershell -NoProfile -ExecutionPolicy Bypass -Command \"& (Join-Path (git rev-parse --show-toplevel) '.codex\\hooks\\run-sql-guard.ps1')\""
+   timeout = 10
+   statusMessage = "Checking SQL result columns for configured sensitive values"
+   ```
+
+4. Replace the matcher with the exact MCP SQL execution tool name, then review and trust the project-local hook in Codex.
+
+Codex runs the guard immediately before the matched MCP tool call. An allowed query proceeds to the MCP tool; a denied query stops before execution. See the [Japanese installation and operations manual](docs/ja/manual.md) for the Windows wrapper, smoke tests, and failure-policy details.
+
+### Enable and review the hook
+
+Project hooks are discovered from `.codex/config.toml`. Review and trust the hook definition in Codex before relying on it. The matcher is a regular expression over the tool name, so keep it limited to the SQL execution tool rather than every MCP tool.
+
+Choose the failure policy explicitly:
+
+- `MCP_SQL_RESULT_GUARD_FAIL_OPEN=true` (default): warn and allow when SQL or rules cannot be parsed.
+- `MCP_SQL_RESULT_GUARD_FAIL_OPEN=false`: deny when analysis cannot complete.
+
+See the [Codex hooks documentation](https://developers.openai.com/codex/hooks) for hook discovery, trust review, matcher behavior, and `PreToolUse` output.
+
+## TSV policy
 
 Rules are UTF-8 tab-separated values. Copy [the example policy](examples/rules/sensitive_columns.tsv) into a path managed with your project and replace the synthetic patterns with the columns you need to protect.
 
