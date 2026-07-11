@@ -80,6 +80,8 @@ FROM collected;
    statusMessage = "Checking SQL result columns for configured sensitive values"
    ```
 
+On Windows, place the [sample wrapper](examples/codex/run-sql-guard.ps1) at `.codex/hooks/run-sql-guard.ps1`.
+
 4. Replace the matcher with the exact MCP SQL execution tool name, then review and trust the project-local hook in Codex.
 
 Codex runs the guard immediately before the matched MCP tool call. An allowed query proceeds to the MCP tool; a denied query stops before execution. See the [Japanese installation and operations manual](docs/ja/manual.md) for the Windows wrapper, smoke tests, and failure-policy details.
