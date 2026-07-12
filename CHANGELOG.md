@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased
+
+- Clarified that sensitive raw values, transforms, CTE outputs, subqueries, and `VALUES` may be used as INSERT input because they are written to the destination rather than returned in the MCP result set.
+- Kept `INSERT ... RETURNING` on the normal output boundary: sensitive returned values are denied, while non-sensitive returned values are allowed.
+- Added a focused eight-scenario INSERT matrix and regression tests for direct input, transforms, CTEs, multi-stage aliases, unresolved CTE stars, multiple sensitive columns, and `RETURNING`.
+- Expanded regression coverage to 209 pytest cases and 164 SQL policy scenarios.
+
 ## 0.2.0
 
 - Added the `aggregate_reduction` TSV mask.
