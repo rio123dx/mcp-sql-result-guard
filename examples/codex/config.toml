@@ -1,5 +1,7 @@
-# Copy this file to <repo>/.codex/config.toml.
+# Add or merge this configuration into <repo>/.codex/config.toml.
+# Do not overwrite existing features or hooks.
 # Replace the matcher with the exact MCP SQL execution tool name shown by Codex.
+# The mcp-sql-result-guard command must be available on PATH.
 # Project-local command hooks must be reviewed and trusted before they run.
 
 [features]
@@ -10,9 +12,8 @@ matcher = "^mcp__warehouse__execute_sql$"
 
 [[hooks.PreToolUse.hooks]]
 type = "command"
-# WSL/Linux: resolve both the TSV and executable from the repository root so
-# the hook still works when Codex starts in a subdirectory.
-command = 'MCP_SQL_RESULT_GUARD_RULES="$(git rev-parse --show-toplevel)/.codex/hooks/sensitive_columns.tsv" MCP_SQL_RESULT_GUARD_DIALECT=redshift MCP_SQL_RESULT_GUARD_FAIL_OPEN=true "$(git rev-parse --show-toplevel)/.venv/bin/mcp-sql-result-guard"'
+# WSL/Linux: resolve the TSV from the repository root and run the installed CLI from PATH.
+command = 'MCP_SQL_RESULT_GUARD_RULES="$(git rev-parse --show-toplevel)/.codex/hooks/sensitive_columns.tsv" MCP_SQL_RESULT_GUARD_DIALECT=redshift MCP_SQL_RESULT_GUARD_FAIL_OPEN=true mcp-sql-result-guard'
 # Windows: copy examples/codex/run-sql-guard.ps1 to .codex/hooks first.
 command_windows = "powershell -NoProfile -ExecutionPolicy Bypass -Command \"& (Join-Path (git rev-parse --show-toplevel) '.codex\\hooks\\run-sql-guard.ps1')\""
 timeout = 10
