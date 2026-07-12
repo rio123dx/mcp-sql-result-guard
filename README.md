@@ -23,6 +23,7 @@ Assume `user_id` is configured as sensitive with `aggregate_reduction` allowed.
 | `SELECT SUM(user_id) FROM orders` | Allow | `SUM` is an explicitly allowed reduction. |
 | `SELECT MIN(user_id) FROM orders` | Deny | `MIN` selects an input value. |
 | `SELECT MD5(user_id) FROM orders` | Deny | A value derived from `user_id` reaches the result. |
+| `WITH x AS (SELECT user_id FROM users) INSERT INTO archive SELECT user_id FROM x` | Allow | INSERT input is written to the destination and is not returned in the MCP result set. |
 | `UPDATE orders SET reviewed = true RETURNING user_id` | Deny | `RETURNING` exposes the configured value. |
 
 The same output-oriented rule applies across CTEs:
@@ -66,8 +67,6 @@ FROM collected;
    ```
 
 3. Add the hook to `.codex/config.toml`.
-
-   If the file already exists, do not overwrite it: add `hooks = true` to its existing `[features]` table, or create that table only when absent, then append the `[[hooks.PreToolUse]]` group. Preserve every unrelated setting and hook, and do not create a second `[features]` table.
 
    ```toml
    [features]
@@ -159,11 +158,12 @@ The classification is allowlist-based: an unknown aggregate is not assumed safe.
 | `UNION`, `INTERSECT`, `EXCEPT` | Every output branch is inspected. |
 | Derived `SELECT *` | Known projections are expanded and inspected. |
 | Unresolved final base-table `SELECT *` | Controlled by `__SELECT_STAR__`. |
+| INSERT input | Raw values, transforms, CTEs, subqueries, and `VALUES` are allowed when they are only written to the destination. |
 | DML `RETURNING` | Inspected like a final result set. |
 | Multiple configured columns | Each matching value path is reported. |
 | Parse or configuration failure | Warn/allow or deny according to `MCP_SQL_RESULT_GUARD_FAIL_OPEN`. |
 
-The full executable matrix is in [tests/data/sql_scenarios.tsv](tests/data/sql_scenarios.tsv): 156 scenarios, including 86 allow and 70 deny decisions.
+The executable matrices are [the base scenarios](tests/data/sql_scenarios.tsv) and [the INSERT scenarios](tests/data/insert_scenarios.tsv): 164 scenarios in total, including 93 allow and 71 deny decisions.
 
 ## Limitations and security boundary
 
@@ -205,10 +205,10 @@ python -m build
 
 Current regression totals:
 
-- pytest: **199 passed / 199**
-- SQL scenarios: **156 passed / 156**
-- expected allow: **86**
-- expected deny: **70**
+- pytest: **209 passed / 209**
+- SQL scenarios: **164 passed / 164**
+- expected allow: **93**
+- expected deny: **71**
 
 ## License
 
