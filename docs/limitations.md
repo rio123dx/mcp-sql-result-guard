@@ -4,15 +4,18 @@
 
 This project reduces accidental disclosure of configured column values to an LLM through the normal result set or DML `RETURNING` of a matched MCP SQL execution tool.
 
-It is designed for workflows in which identifiers still need to participate in filtering, joins, grouping, ordering, CTEs, subqueries, and explicitly allowed reductions, while raw or value-derived identifier output should be denied.
+It is designed for workflows in which identifiers still need to participate in filtering, joins, grouping, ordering, CTEs, subqueries, explicitly allowed reductions, and write-only INSERT inputs, while raw or value-derived identifier output should be denied.
 
 ## Protection boundary
 
 The guard performs static analysis before execution. It does not connect to the database, inspect catalog metadata by default, or filter the result after execution. It only runs for tool calls matched by the configured Codex `PreToolUse` hook.
 
+INSERT input is treated as a write rather than an MCP-visible result. Sensitive raw values, transforms, CTE outputs, subquery outputs, and `VALUES` may therefore be written when no sensitive expression appears in `RETURNING`. This does not establish that the destination is authorized or safe.
+
 The guard does not prevent:
 
 - writes, deletes, exports, `UNLOAD`, stored-procedure side effects, or arbitrary SQL side effects
+- sensitive values being copied into a destination the database role is permitted to write
 - equivalent access through another MCP tool, shell command, service, or database client
 - values emitted by UDFs, stored procedures, dynamic SQL, macros, or code the parser cannot inspect
 - sensitive values hidden behind column names that are not covered by the TSV policy
@@ -40,7 +43,7 @@ The analyzer has no database catalog by default. It cannot know which columns ar
 
 An intermediate unresolved star does not trigger that special rule when no value from it reaches final output. If an outer query references a configured sensitive name through the star, the analyzer treats that path as potentially sensitive.
 
-Ambiguous or dialect-specific SQL may parse differently from the target database. Redshift is the primary regression-tested dialect. Add representative syntax to `tests/data/sql_scenarios.tsv` before relying on another SQLGlot dialect.
+Ambiguous or dialect-specific SQL may parse differently from the target database. Redshift is the primary regression-tested dialect. Add representative syntax to the scenario matrices in `tests/data/` before relying on another SQLGlot dialect.
 
 ## Failure behavior
 
@@ -65,6 +68,7 @@ A Codex `PreToolUse` hook is a guardrail, not a complete enforcement boundary. M
 ## Recommended complementary controls
 
 - least-privilege database roles
+- destination-table authorization and write policy
 - views that exclude raw identifiers
 - column masking and row/column security
 - query and result audit logs

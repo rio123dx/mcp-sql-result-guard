@@ -26,11 +26,13 @@ def split_expected(value: str) -> set[str]:
 
 
 def main() -> int:
-    scenario_path = ROOT / "tests" / "data" / "sql_scenarios.tsv"
+    scenario_paths = sorted((ROOT / "tests" / "data").glob("*_scenarios.tsv"))
     output_path = ROOT / "scenario-results.tsv"
 
-    with scenario_path.open("r", encoding="utf-8-sig", newline="") as file:
-        scenarios = list(csv.DictReader(file, delimiter="\t"))
+    scenarios: list[dict[str, str]] = []
+    for scenario_path in scenario_paths:
+        with scenario_path.open("r", encoding="utf-8-sig", newline="") as file:
+            scenarios.extend(csv.DictReader(file, delimiter="\t"))
 
     results: list[dict[str, str]] = []
     failed = 0
