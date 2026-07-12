@@ -51,6 +51,14 @@ Control-only inputs are not treated as returned values:
 
 This distinction allows an identifier to participate in analysis without returning it to the model.
 
+## Write-only statements
+
+INSERT source rows are not MCP result columns. Raw configured values, transforms, CTE or subquery outputs, unresolved intermediate stars, and `VALUES` may therefore flow into an INSERT destination without producing a finding.
+
+`INSERT ... RETURNING` is different: the `RETURNING` expressions are an MCP-visible result boundary and are inspected normally. A sensitive returned expression is denied even when the same value is allowed as INSERT input.
+
+The guard does not decide whether a destination table is authorized or safe. Database permissions and MCP-side statement policy must control writes and other side effects.
+
 ## Scope and alias propagation
 
 SQLGlot scopes connect outer projections to CTEs, subqueries, and set-operation branches. A value is inspected if a final expression references it through any number of aliases. An intermediate value is not inspected merely because it exists; if the outer query discards it, the path ends.
