@@ -32,7 +32,10 @@ def rules_two(project_root: Path):
 def pytest_generate_tests(metafunc):
     if "scenario" not in metafunc.fixturenames:
         return
-    path = ROOT / "tests" / "data" / "sql_scenarios.tsv"
-    with path.open("r", encoding="utf-8-sig", newline="") as f:
-        rows = list(csv.DictReader(f, delimiter="\t"))
+
+    rows: list[dict[str, str]] = []
+    for path in sorted((ROOT / "tests" / "data").glob("*_scenarios.tsv")):
+        with path.open("r", encoding="utf-8-sig", newline="") as file:
+            rows.extend(csv.DictReader(file, delimiter="\t"))
+
     metafunc.parametrize("scenario", rows, ids=[row["scenario_id"] for row in rows])
