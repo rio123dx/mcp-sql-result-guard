@@ -1,0 +1,9 @@
+﻿scenario_id	category	rule_set	sql	expected_result	expected_columns	description
+I001	INSERT加工値	one	INSERT INTO archive(user_hash) SELECT MD5(user_id) FROM users	allow		加工した機微値もINSERT入力ならLLMへ返らない
+I002	CTE INSERT生値	one	WITH x AS (SELECT user_id FROM users) INSERT INTO archive(user_id) SELECT user_id FROM x	allow		CTE経由の生値を保存するだけ
+I003	CTE INSERT多段別名	one	WITH a AS (SELECT user_id AS x FROM users), b AS (SELECT x AS y FROM a) INSERT INTO archive(user_id) SELECT y FROM b	allow		多段CTEの別名経由でもINSERT入力は許可
+I004	CTE INSERT STAR	one	WITH x AS (SELECT * FROM users) INSERT INTO archive SELECT * FROM x	allow		未解決STARもINSERT入力だけなら結果セットへ返らない
+I005	INSERT VALUES	one	INSERT INTO archive(user_id) VALUES ('u1')	allow		VALUESは書込みだけで結果セットを返さない
+I006	INSERT RETURNING非機微	one	INSERT INTO archive(user_id) SELECT user_id FROM users RETURNING archive_id	allow		INSERT入力は機微でもRETURNINGが非機微列なら許可
+I007	INSERT RETURNING機微	one	INSERT INTO archive(user_id) SELECT user_id FROM users RETURNING user_id	deny	user_id	INSERT入力ではなくRETURNINGが機微値を返すため拒否
+I008	2列CTE INSERT	two	WITH x AS (SELECT user_id, email FROM users) INSERT INTO archive(user_id, email) SELECT user_id, email FROM x	allow		複数の機微列もCTE経由で保存するだけなら許可
